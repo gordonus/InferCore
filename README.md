@@ -111,7 +111,7 @@ This repository includes:
 - Go implementation of the control plane (policy, routing, reliability, RAG retrieval, adapters)
 - Documentation under `docs/` (architecture one-pager, observability, load testing, streaming)
 
-## v1.5: AI Request model, ledger, RAG, CLI
+## v1.0.0: AI Request model, ledger, RAG, CLI
 
 - **AI Request** — Optional fields on `POST /infer`: `request_type` (`inference` \| `rag` \| `agent`), `pipeline_ref` (defaults: `inference/basic:v1`, `rag/basic:v1`, `agent/basic:v0`), and `context` (RAG: `query`, `knowledge_base`; agent: tool hints for policy).
 - **Request ledger** — Enable with `ledger.enabled` and `driver: memory`, `sqlite` (`path`), or `postgres` (`dsn`). Persists full normalized `AIRequest` as `ai_request_json` (plus `input`/`context` JSON), `policy_snapshot` after routing, and per-step records for audit and replay.
