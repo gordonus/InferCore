@@ -106,7 +106,7 @@ func assertAdapterConformance(t *testing.T, adapter interfaces.BackendAdapter) {
 		t.Fatalf("health should pass in conformance test: %v", err)
 	}
 	resp, err := adapter.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{
+		AIRequest: types.AIRequest{
 			Input: map[string]any{"text": "hi"},
 		},
 	})

@@ -2,34 +2,45 @@ openapi: 3.0.3
 info:
   title: InferCore API
   version: 0.1.0
-  description: InferCore HTTP API (OpenAPI draft).
+  description: >
+    InferCore HTTP API (OpenAPI draft). POST /infer is the single ingress for plain inference,
+    RAG (retrieval + rerank + model call when request_type=rag), and agent preview traffic.
 servers:
   - url: http://localhost:8080
 paths:
   /infer:
     post:
-      summary: Run inference through InferCore decision layer
+      summary: Run an AI request through InferCore (inference, RAG, or agent preview)
+      description: >
+        Unified AI ingress. Use request_type=inference (default), rag (requires knowledge_bases in server config),
+        or agent (preview). RAG requests run retrieve and rerank after routing, then call the selected backend.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InferenceRequest'
+              $ref: '#/components/schemas/AIRequest'
       responses:
         '200':
-          description: Successful inference response
+          description: Successful AI response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InferenceResponse'
+                $ref: '#/components/schemas/AIResponse'
         '400':
-          description: Invalid request
+          description: Invalid request (including misconfigured RAG / empty query when request_type=rag)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Policy rejected request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: Agent execution not implemented (preview)
           content:
             application/json:
               schema:
@@ -41,7 +52,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
-          description: Inference exceeded server.request_timeout_ms (policy + routing + backends)
+          description: Exceeded server.request_timeout_ms (policy + routing + optional RAG + backends)
           content:
             application/json:
               schema:
@@ -102,9 +113,27 @@ components:
       required:
         - stream
         - max_tokens
-    InferenceRequest:
+    AIRequest:
       type: object
+      description: >
+        Unified ingress body for inference, RAG, and agent (preview). Optional request_type,
+        pipeline_ref, and context. Defaults request_type=inference, pipeline_ref=inference/basic:v1.
+        For RAG, set request_type=rag, provide input.text and/or context.query, and context.knowledge_base
+        to select a configured knowledge base.
       properties:
+        request_id:
+          type: string
+          description: Optional; server assigns UUID if omitted.
+        request_type:
+          type: string
+          enum: [inference, rag, agent]
+        pipeline_ref:
+          type: string
+          example: inference/basic:v1
+        context:
+          type: object
+          additionalProperties: true
+          description: RAG query overrides (e.g. query, knowledge_base), agent tool hints, etc.
         tenant_id:
           type: string
         task_type:
@@ -121,7 +150,7 @@ components:
         - task_type
         - input
         - options
-    InferenceMetrics:
+    AIMetrics:
       type: object
       properties:
         ttft_ms:
@@ -157,12 +186,16 @@ components:
           type: string
       required:
         - triggered
-    InferenceResponse:
+    AIResponse:
       type: object
       properties:
         request_id:
           type: string
         trace_id:
+          type: string
+        request_type:
+          type: string
+        pipeline_ref:
           type: string
         selected_backend:
           type: string
@@ -178,7 +211,7 @@ components:
           type: object
           additionalProperties: true
         metrics:
-          $ref: '#/components/schemas/InferenceMetrics'
+          $ref: '#/components/schemas/AIMetrics'
         fallback:
           $ref: '#/components/schemas/FallbackState'
         degrade:
@@ -201,10 +234,13 @@ components:
             - method_not_allowed
             - invalid_request
             - invalid_options
+            - unsupported_request_type
             - policy_error
             - policy_rejected
             - route_error
             - execution_failed
+            - agent_not_implemented
+            - rag_not_configured
         message:
           type: string
       required:

@@ -22,9 +22,26 @@ func testConfig() *config.Config {
 	}
 }
 
+func TestBasicEngine_AgentRejectedWhenFeatureOff(t *testing.T) {
+	engine := NewBasicEngine(testConfig())
+	decision, err := engine.Evaluate(context.Background(), types.AIRequest{
+		TenantID:    "team-a",
+		TaskType:    "simple",
+		RequestType: types.RequestTypeAgent,
+		Input:       map[string]any{"text": "x"},
+		Options:     types.RequestOptions{MaxTokens: 128},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("expected agent request to be rejected when features.agent_enabled is false")
+	}
+}
+
 func TestBasicEngine_UnknownTenantRejected(t *testing.T) {
 	engine := NewBasicEngine(testConfig())
-	decision, err := engine.Evaluate(context.Background(), types.InferenceRequest{
+	decision, err := engine.Evaluate(context.Background(), types.AIRequest{
 		TenantID: "missing",
 	})
 	if err != nil {
@@ -37,7 +54,7 @@ func TestBasicEngine_UnknownTenantRejected(t *testing.T) {
 
 func TestBasicEngine_PriorityNormalized(t *testing.T) {
 	engine := NewBasicEngine(testConfig())
-	decision, err := engine.Evaluate(context.Background(), types.InferenceRequest{
+	decision, err := engine.Evaluate(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
@@ -56,12 +73,12 @@ func TestBasicEngine_PriorityNormalized(t *testing.T) {
 func TestBasicEngine_RateLimit(t *testing.T) {
 	engine := NewBasicEngine(testConfig())
 
-	first, _ := engine.Evaluate(context.Background(), types.InferenceRequest{
+	first, _ := engine.Evaluate(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
 	})
-	second, _ := engine.Evaluate(context.Background(), types.InferenceRequest{
+	second, _ := engine.Evaluate(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
@@ -77,7 +94,7 @@ func TestBasicEngine_RateLimit(t *testing.T) {
 
 func TestBasicEngine_BudgetExceeded(t *testing.T) {
 	engine := NewBasicEngine(testConfig())
-	decision, err := engine.Evaluate(context.Background(), types.InferenceRequest{
+	decision, err := engine.Evaluate(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 2000},

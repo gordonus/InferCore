@@ -8,11 +8,11 @@ import (
 )
 
 type Router interface {
-	SelectRoute(ctx context.Context, req types.InferenceRequest, state types.RuntimeState) (types.RouteDecision, error)
+	SelectRoute(ctx context.Context, req types.AIRequest, state types.RuntimeState) (types.RouteDecision, error)
 }
 
 type PolicyEngine interface {
-	Evaluate(ctx context.Context, req types.InferenceRequest) (types.PolicyDecision, error)
+	Evaluate(ctx context.Context, req types.AIRequest) (types.PolicyDecision, error)
 }
 
 type BackendAdapter interface {
@@ -25,14 +25,33 @@ type BackendAdapter interface {
 type ReliabilityManager interface {
 	ExecuteWithFallback(
 		ctx context.Context,
-		req types.InferenceRequest,
+		req types.AIRequest,
 		primary types.RouteDecision,
 		fallback []types.RouteDecision,
 	) (types.ExecutionResult, error)
+	ExecuteWithFallbackOpts(
+		ctx context.Context,
+		req types.AIRequest,
+		primary types.RouteDecision,
+		fallback []types.RouteDecision,
+		opts types.ReliabilityExecuteOptions,
+	) (types.ExecutionResult, error)
+}
+
+// RetrievalAdapter performs retrieval for RAG (v1.5).
+type RetrievalAdapter interface {
+	Name() string
+	Retrieve(ctx context.Context, query string, opts map[string]any) (types.RetrievalResult, error)
+}
+
+// RerankAdapter reorders or filters retrieval chunks before the model call (optional RAG step).
+type RerankAdapter interface {
+	Name() string
+	Rerank(ctx context.Context, query string, chunks []types.RetrievalChunk, opts map[string]any) (types.RetrievalResult, error)
 }
 
 type CostEngine interface {
-	Estimate(req types.InferenceRequest, backend types.BackendMetadata) types.CostEstimate
+	Estimate(req types.AIRequest, backend types.BackendMetadata) types.CostEstimate
 }
 
 type SLOEngine interface {

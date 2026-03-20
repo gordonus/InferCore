@@ -88,7 +88,7 @@ func (a *Adapter) apiKey() string {
 }
 
 func (a *Adapter) Invoke(ctx context.Context, req types.BackendRequest) (types.BackendResponse, error) {
-	text, _ := req.InferenceRequest.Input["text"].(string)
+	text, _ := req.Input["text"].(string)
 	if text == "" {
 		text = "No text provided."
 	}
@@ -100,7 +100,7 @@ func (a *Adapter) Invoke(ctx context.Context, req types.BackendRequest) (types.B
 		return types.BackendResponse{}, upstream.New(upstream.KindBackendError, "gemini backend requires api_key")
 	}
 
-	if req.InferenceRequest.Options.Stream {
+	if req.Options.Stream {
 		return a.invokeStream(ctx, text, model)
 	}
 	return a.invokeNonStream(ctx, text, model)

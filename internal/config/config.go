@@ -10,13 +10,53 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Telemetry   TelemetryConfig   `yaml:"telemetry"`
-	SLO         SLOStoreConfig    `yaml:"slo"`
-	Backends    []BackendConfig   `yaml:"backends"`
-	Tenants     []TenantConfig    `yaml:"tenants"`
-	Routing     RoutingConfig     `yaml:"routing"`
-	Reliability ReliabilityConfig `yaml:"reliability"`
+	Server          ServerConfig          `yaml:"server"`
+	Telemetry       TelemetryConfig       `yaml:"telemetry"`
+	SLO             SLOStoreConfig        `yaml:"slo"`
+	Backends        []BackendConfig       `yaml:"backends"`
+	Tenants         []TenantConfig        `yaml:"tenants"`
+	Routing         RoutingConfig         `yaml:"routing"`
+	Reliability     ReliabilityConfig     `yaml:"reliability"`
+	Ledger          LedgerConfig          `yaml:"ledger"`
+	Features        FeaturesConfig        `yaml:"features"`
+	KnowledgeBases  []KnowledgeBaseConfig `yaml:"knowledge_bases"`
+	PipelinesConfig PipelinesFileConfig   `yaml:"pipelines"`
+	RAG             RAGConfig             `yaml:"rag"`
+}
+
+// RAGConfig holds optional RAG pipeline settings (rerank, etc.).
+type RAGConfig struct {
+	Rerank RerankConfig `yaml:"rerank"`
+}
+
+// RerankConfig selects rerank implementation (v1.5: noop only).
+type RerankConfig struct {
+	Type string `yaml:"type"` // noop | (future: cross_encoder, ...)
+}
+
+// FeaturesConfig toggles optional runtime surfaces (v1.5).
+type FeaturesConfig struct {
+	AgentEnabled bool `yaml:"agent_enabled"`
+}
+
+// LedgerConfig persists request ledger (SQLite, Postgres, or in-memory).
+type LedgerConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Driver  string `yaml:"driver"` // memory | sqlite | postgres
+	Path    string `yaml:"path"`   // sqlite file path when driver=sqlite
+	DSN     string `yaml:"dsn"`    // postgres connection string when driver=postgres
+}
+
+// KnowledgeBaseConfig backs retrieval adapters (e.g. file-backed demo KB for RAG).
+type KnowledgeBaseConfig struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"` // file
+	Path string `yaml:"path"`
+}
+
+// PipelinesFileConfig optional path to extra pipeline definitions (future); built-ins always exist.
+type PipelinesFileConfig struct {
+	ConfigPath string `yaml:"config_path"`
 }
 
 // SLOStoreConfig bounds in-memory SLO state (per request_id).
@@ -81,6 +121,12 @@ type TenantConfig struct {
 	Priority         string  `yaml:"priority"`
 	BudgetPerRequest float64 `yaml:"budget_per_request"`
 	RateLimitRPS     int     `yaml:"rate_limit_rps"`
+	// Agent limits (v1.5 preview; enforced when request_type=agent).
+	MaxSteps       int      `yaml:"max_steps"`
+	MaxToolCalls   int      `yaml:"max_tool_calls"`
+	MaxAgentCost   float64  `yaml:"max_agent_cost"`
+	AllowedTools   []string `yaml:"allowed_tools"`
+	AgentTimeoutMS int      `yaml:"agent_timeout_ms"`
 }
 
 type RouteWhen struct {
@@ -177,6 +223,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.SLO.MaxAgeMS <= 0 {
 		cfg.SLO.MaxAgeMS = 600000
+	}
+	if strings.TrimSpace(cfg.Ledger.Driver) == "" {
+		cfg.Ledger.Driver = "memory"
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -308,6 +357,32 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config validation: otlp_endpoint is required for telemetry exporter %q", c.Telemetry.Exporter)
 	}
 
+	drv := strings.ToLower(strings.TrimSpace(c.Ledger.Driver))
+	switch drv {
+	case "memory", "sqlite", "postgres":
+	default:
+		return fmt.Errorf("config validation: ledger.driver must be memory, sqlite, or postgres, got %q", c.Ledger.Driver)
+	}
+	if c.Ledger.Enabled && drv == "sqlite" && strings.TrimSpace(c.Ledger.Path) == "" {
+		return fmt.Errorf("config validation: ledger.path is required when ledger.enabled=true and driver=sqlite")
+	}
+	if c.Ledger.Enabled && drv == "postgres" && strings.TrimSpace(c.Ledger.DSN) == "" {
+		return fmt.Errorf("config validation: ledger.dsn is required when ledger.enabled=true and driver=postgres")
+	}
+
+	for _, kb := range c.KnowledgeBases {
+		if strings.TrimSpace(kb.Name) == "" {
+			return fmt.Errorf("config validation: knowledge_bases entry name cannot be empty")
+		}
+		typ := strings.ToLower(strings.TrimSpace(kb.Type))
+		if typ != "file" {
+			return fmt.Errorf("config validation: knowledge base %q unsupported type %q (only file)", kb.Name, kb.Type)
+		}
+		if strings.TrimSpace(kb.Path) == "" {
+			return fmt.Errorf("config validation: knowledge base %q requires path", kb.Name)
+		}
+	}
+
 	return nil
 }
 
@@ -327,4 +402,14 @@ func (c *Config) BackendByName(name string) (BackendConfig, bool) {
 		}
 	}
 	return BackendConfig{}, false
+}
+
+// KnowledgeBaseByName returns a configured KB by name.
+func (c *Config) KnowledgeBaseByName(name string) (KnowledgeBaseConfig, bool) {
+	for _, kb := range c.KnowledgeBases {
+		if kb.Name == name {
+			return kb, true
+		}
+	}
+	return KnowledgeBaseConfig{}, false
 }

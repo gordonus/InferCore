@@ -154,6 +154,35 @@ slo:
   max_records: 10000
   max_age_ms: 600000
 
+# Request ledger (SQLite, Postgres, or in-memory) for audit, trace/replay CLI.
+ledger:
+  enabled: true
+  driver: memory
+  # driver: sqlite
+  # path: ./infercore-ledger.db
+  # driver: postgres
+  # dsn: postgres://user:pass@localhost:5432/infercore?sslmode=disable
+
+# Feature flags (v1.5).
+features:
+  # When false, agent requests are rejected at policy. When true, policy tenant limits apply but execution returns 501 until implemented.
+  agent_enabled: false
+
+# File-backed knowledge bases for RAG — set request_type: rag on POST /infer (see README + api/openapi.yaml).
+knowledge_bases:
+  - name: demo
+    type: file
+    path: examples/kb
+
+# RAG rerank stage after retrieval (v1.5: noop only; future: cross-encoder / remote rerank).
+rag:
+  rerank:
+    type: noop
+
+# Optional external pipeline registry (built-in refs: inference/basic:v1, rag/basic:v1, agent/basic:v0).
+pipelines:
+  config_path: ""
+
 # Not loaded by InferCore yet (documentation / future use only).
 guardrails:
   enabled: true

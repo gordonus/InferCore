@@ -31,7 +31,7 @@ func (a *streamCaptureAdapter) Name() string { return a.name }
 
 func (a *streamCaptureAdapter) Invoke(_ context.Context, req types.BackendRequest) (types.BackendResponse, error) {
 	if a.lastStream != nil {
-		*a.lastStream = req.InferenceRequest.Options.Stream
+		*a.lastStream = req.Options.Stream
 	}
 	return types.BackendResponse{
 		Output: map[string]any{"ok": true},
@@ -67,7 +67,7 @@ func TestExecuteWithFallback_ForcesNonStreamOnFallbackWhenDisabled(t *testing.T)
 		"backup":  backup,
 	})
 
-	_, err := m.ExecuteWithFallback(context.Background(), types.InferenceRequest{
+	_, err := m.ExecuteWithFallback(context.Background(), types.AIRequest{
 		TenantID: "t",
 		TaskType: "simple",
 		Input:    map[string]any{"text": "x"},

@@ -21,7 +21,7 @@ func NewRuleRouter(cfg *config.Config, costEngine interfaces.CostEngine) *RuleRo
 	}
 }
 
-func (r *RuleRouter) SelectRoute(ctx context.Context, req types.InferenceRequest, state types.RuntimeState) (types.RouteDecision, error) {
+func (r *RuleRouter) SelectRoute(ctx context.Context, req types.AIRequest, state types.RuntimeState) (types.RouteDecision, error) {
 	if err := ctx.Err(); err != nil {
 		return types.RouteDecision{}, err
 	}
@@ -50,7 +50,7 @@ func backendSelectable(state types.RuntimeState, backendName string) bool {
 	return BackendHealthOK(state.BackendHealth, backendName)
 }
 
-func (r *RuleRouter) selectByRules(tenant config.TenantConfig, req types.InferenceRequest, state types.RuntimeState) (types.RouteDecision, error) {
+func (r *RuleRouter) selectByRules(tenant config.TenantConfig, req types.AIRequest, state types.RuntimeState) (types.RouteDecision, error) {
 	_ = tenant
 
 	for _, rule := range r.cfg.Routing.Rules {
@@ -106,7 +106,7 @@ func (r *RuleRouter) firstHealthyBackend(state types.RuntimeState) (types.RouteD
 	return types.RouteDecision{}, false
 }
 
-func (r *RuleRouter) optimizeByCost(tenant config.TenantConfig, req types.InferenceRequest, base types.RouteDecision, state types.RuntimeState) types.RouteDecision {
+func (r *RuleRouter) optimizeByCost(tenant config.TenantConfig, req types.AIRequest, base types.RouteDecision, state types.RuntimeState) types.RouteDecision {
 	if r.costEngine == nil {
 		return base
 	}
@@ -173,7 +173,7 @@ func hasCapability(capabilities []string, expected string) bool {
 	return false
 }
 
-func matchesRule(rule config.RouteRule, tenant config.TenantConfig, req types.InferenceRequest) bool {
+func matchesRule(rule config.RouteRule, tenant config.TenantConfig, req types.AIRequest) bool {
 	if rule.When.TaskType != "" && rule.When.TaskType != req.TaskType {
 		return false
 	}

@@ -44,11 +44,11 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Invoke(ctx context.Context, req types.BackendRequest) (types.BackendResponse, error) {
-	text, _ := req.InferenceRequest.Input["text"].(string)
+	text, _ := req.Input["text"].(string)
 	if text == "" {
 		text = "No text provided."
 	}
-	streamRequested := req.InferenceRequest.Options.Stream
+	streamRequested := req.Options.Stream
 
 	model := strings.TrimSpace(a.cfg.DefaultModel)
 	if model == "" {

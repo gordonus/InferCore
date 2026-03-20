@@ -44,7 +44,7 @@ func testRouterConfig() *config.Config {
 
 func TestRuleRouter_UsesRuleMatch(t *testing.T) {
 	r := NewRuleRouter(testRouterConfig(), nil)
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 	}, types.RuntimeState{})
@@ -61,7 +61,7 @@ func TestRuleRouter_UsesRuleMatch(t *testing.T) {
 
 func TestRuleRouter_FallsBackToDefault(t *testing.T) {
 	r := NewRuleRouter(testRouterConfig(), nil)
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "translation",
 	}, types.RuntimeState{})
@@ -75,7 +75,7 @@ func TestRuleRouter_FallsBackToDefault(t *testing.T) {
 
 func TestRuleRouter_CostOptimizationPrefersCheaperCompatibleBackend(t *testing.T) {
 	r := NewRuleRouter(testRouterConfig(), cost.NewSimpleEngine())
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
@@ -92,7 +92,7 @@ func TestRuleRouter_CostOptimizationPrefersCheaperCompatibleBackend(t *testing.T
 
 func TestRuleRouter_OverloadDegradeSkipsCostOptimization(t *testing.T) {
 	r := NewRuleRouter(testRouterConfig(), cost.NewSimpleEngine())
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
@@ -113,7 +113,7 @@ func TestRuleRouter_SkipsUnhealthyRuleBackendUsesDefault(t *testing.T) {
 			"small-model": true,
 		},
 	}
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 	}, state)
@@ -138,7 +138,7 @@ func TestRuleRouter_DefaultUnhealthyPicksFirstHealthyInConfigOrder(t *testing.T)
 			"small-model": true,
 		},
 	}
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "translation",
 	}, state)
@@ -161,7 +161,7 @@ func TestRuleRouter_AllUnhealthyReturnsError(t *testing.T) {
 			"small-model": false,
 		},
 	}
-	_, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	_, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 	}, state)
@@ -178,7 +178,7 @@ func TestRuleRouter_CostOptimizationSkipsUnhealthyCheaperBackend(t *testing.T) {
 			"small-model": false,
 		},
 	}
-	decision, err := r.SelectRoute(context.Background(), types.InferenceRequest{
+	decision, err := r.SelectRoute(context.Background(), types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 		Options:  types.RequestOptions{MaxTokens: 128},
@@ -195,7 +195,7 @@ func TestRuleRouter_ContextCanceled(t *testing.T) {
 	r := NewRuleRouter(testRouterConfig(), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := r.SelectRoute(ctx, types.InferenceRequest{
+	_, err := r.SelectRoute(ctx, types.AIRequest{
 		TenantID: "team-a",
 		TaskType: "simple",
 	}, types.RuntimeState{})

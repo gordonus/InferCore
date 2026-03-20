@@ -15,14 +15,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/infercore/infercore/internal/adapters/gemini"
-	"github.com/infercore/infercore/internal/adapters/mock"
-	"github.com/infercore/infercore/internal/adapters/vllm"
+	adaptersreg "github.com/infercore/infercore/internal/adapters"
 	"github.com/infercore/infercore/internal/config"
 	"github.com/infercore/infercore/internal/cost"
+	"github.com/infercore/infercore/internal/execution"
 	"github.com/infercore/infercore/internal/interfaces"
 	"github.com/infercore/infercore/internal/policy"
 	"github.com/infercore/infercore/internal/reliability"
+	"github.com/infercore/infercore/internal/requests"
+	"github.com/infercore/infercore/internal/retrieval"
 	"github.com/infercore/infercore/internal/router"
 	"github.com/infercore/infercore/internal/slo"
 	"github.com/infercore/infercore/internal/telemetry"
@@ -42,6 +43,9 @@ type Server struct {
 	sloEngine   interfaces.SLOEngine
 	telemetry   interfaces.TelemetryExporter
 	adapters    map[string]interfaces.BackendAdapter
+	ledger      requests.Store
+	retrieval   map[string]interfaces.RetrievalAdapter
+	rerank      interfaces.RerankAdapter
 
 	healthMu       sync.Mutex
 	healthSnapshot map[string]bool
@@ -118,7 +122,7 @@ func New(cfg *config.Config) *Server {
 func NewWithDependencies(cfg *config.Config, sloEngine interfaces.SLOEngine, telemetryExporter interfaces.TelemetryExporter) *Server {
 	adapters := make(map[string]interfaces.BackendAdapter, len(cfg.Backends))
 	for _, backend := range cfg.Backends {
-		adapter, ok := buildAdapter(backend)
+		adapter, ok := adaptersreg.NewBackend(backend)
 		if !ok {
 			log.Printf("event=adapter_init_skipped backend=%s type=%s reason=%q", backend.Name, backend.Type, "unsupported backend type")
 			continue
@@ -128,6 +132,12 @@ func NewWithDependencies(cfg *config.Config, sloEngine interfaces.SLOEngine, tel
 
 	costEngine := cost.NewSimpleEngine()
 
+	ledger, err := requests.NewFromConfig(cfg)
+	if err != nil {
+		log.Printf("event=ledger_init_failed err=%v", err)
+		ledger = nil
+	}
+
 	srv := &Server{
 		cfg:         cfg,
 		policy:      policy.NewBasicEngine(cfg),
@@ -136,22 +146,12 @@ func NewWithDependencies(cfg *config.Config, sloEngine interfaces.SLOEngine, tel
 		sloEngine:   sloEngine,
 		telemetry:   telemetryExporter,
 		adapters:    adapters,
+		ledger:      ledger,
+		retrieval:   retrieval.FromConfig(cfg),
+		rerank:      retrieval.NewRerankFromConfig(cfg),
 	}
 	srv.initPrometheusMetrics()
 	return srv
-}
-
-func buildAdapter(backend config.BackendConfig) (interfaces.BackendAdapter, bool) {
-	switch backend.Type {
-	case "mock":
-		return mock.New(backend), true
-	case "vllm", "openai", "openai_compatible":
-		return vllm.New(backend), true
-	case "gemini":
-		return gemini.New(backend), true
-	default:
-		return nil, false
-	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -165,6 +165,9 @@ func (s *Server) Routes() http.Handler {
 
 // Shutdown releases telemetry resources (e.g. OTLP batch flush). Call on process exit.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.ledger != nil {
+		_ = s.ledger.Close()
+	}
 	type shutdowner interface {
 		Shutdown(context.Context) error
 	}
@@ -364,7 +367,7 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req types.InferenceRequest
+	var req types.AIRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.emitInferTrace(traceID, spanID, traceStart, "", "", "", "invalid_json")
 		writeError(w, http.StatusBadRequest, "", errCodeInvalidRequest, "invalid JSON request body")
@@ -392,16 +395,38 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req = types.NormalizeAIRequest(req)
+	rt := strings.ToLower(strings.TrimSpace(req.RequestType))
+	if rt != "" && rt != types.RequestTypeInference && rt != types.RequestTypeRAG && rt != types.RequestTypeAgent {
+		s.emitInferTrace(traceID, spanID, traceStart, "", req.TenantID, "", "unsupported_request_type")
+		writeError(w, http.StatusBadRequest, "", errCodeUnsupportedRequestType, "request_type must be inference, rag, or agent")
+		return
+	}
+
 	requestID := uuid.NewString()
 	s.inferReqCounter.Inc()
 	now := time.Now().UnixMilli()
 	req.RequestID = requestID
+	clock := time.Now()
 
 	inferCtx, cancel := context.WithTimeout(r.Context(), s.inferRequestTimeout())
 	defer cancel()
 
+	sw := &execution.StepWriter{Store: s.ledger, RequestID: requestID, TenantID: req.TenantID}
+	sw.OnStep = func(ctx context.Context, stepType, backend, status string, start time.Time, latencyMs int64) {
+		s.emitInferStepTrace(traceID, requestID, req.TenantID, stepType, backend, status, start, latencyMs)
+	}
+	s.createLedgerRequest(inferCtx, traceID, requestID, req, clock)
+
+	_ = sw.Run(inferCtx, execution.StepNormalize, "", map[string]any{
+		"request_type": req.RequestType, "pipeline_ref": req.PipelineRef,
+	}, func() (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
 	policyDecision, err := s.policy.Evaluate(inferCtx, req)
 	if err != nil {
+		s.updateLedgerFailed(inferCtx, requestID)
 		if st, ec, ok := inferBudgetHTTPStatus(inferCtx, err); ok {
 			s.noteTimeoutForScaling(err)
 			s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "gateway_timeout")
@@ -412,22 +437,43 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, requestID, errCodePolicyError, err.Error())
 		return
 	}
-	if !policyDecision.Allowed {
+	if err := sw.Run(inferCtx, execution.StepPolicyCheck, "", map[string]any{"tenant_id": req.TenantID}, func() (map[string]any, error) {
+		if !policyDecision.Allowed {
+			return map[string]any{"allowed": false, "reason": policyDecision.Reason}, fmt.Errorf("policy rejected: %s", policyDecision.Reason)
+		}
+		return map[string]any{"allowed": true, "reason": policyDecision.Reason}, nil
+	}); err != nil {
 		log.Printf("event=policy_rejected request_id=%s tenant_id=%s reason=%q", requestID, req.TenantID, policyDecision.Reason)
+		s.updateLedgerFailed(inferCtx, requestID)
 		s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "policy_rejected")
 		writeError(w, http.StatusTooManyRequests, requestID, errCodePolicyRejected, policyDecision.Reason)
 		return
 	}
 	req = policyDecision.Normalized
 
+	if req.RequestType == types.RequestTypeAgent {
+		_ = sw.Run(inferCtx, execution.StepAgentStub, "", map[string]any{"pipeline": req.PipelineRef}, func() (map[string]any, error) {
+			return nil, fmt.Errorf("agent execution not implemented")
+		})
+		s.updateLedgerFailed(inferCtx, requestID)
+		s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "agent_not_implemented")
+		writeError(w, http.StatusNotImplemented, requestID, errCodeAgentNotImplemented, "agent execution is not implemented in this release")
+		return
+	}
+
 	release, overloadDegrade, rejectOverload := s.beginInferLoad()
 	if rejectOverload {
 		log.Printf("event=overload_rejected request_id=%s tenant_id=%s", requestID, req.TenantID)
+		s.updateLedgerFailed(inferCtx, requestID)
 		s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "overload")
 		writeError(w, http.StatusServiceUnavailable, requestID, errCodeOverload, "inference concurrency limit exceeded")
 		return
 	}
 	defer release()
+
+	_ = sw.Run(inferCtx, execution.StepAdmission, "", map[string]any{"queue_depth": s.inferInflight.Load()}, func() (map[string]any, error) {
+		return map[string]any{"overload_degrade": overloadDegrade}, nil
+	})
 
 	health := s.cachedBackendHealth(inferCtx)
 	primary, err := s.router.SelectRoute(inferCtx, req, types.RuntimeState{
@@ -436,6 +482,7 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		OverloadDegrade: overloadDegrade,
 	})
 	if err != nil {
+		s.updateLedgerFailed(inferCtx, requestID)
 		if st, ec, ok := inferBudgetHTTPStatus(inferCtx, err); ok {
 			s.noteTimeoutForScaling(err)
 			s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "gateway_timeout")
@@ -447,12 +494,53 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = sw.Run(inferCtx, execution.StepRoute, primary.BackendName, map[string]any{"reason": primary.Reason}, func() (map[string]any, error) {
+		return map[string]any{"backend": primary.BackendName, "estimated_cost": primary.EstimatedCost}, nil
+	})
+
+	snap := types.PolicySnapshot{
+		PolicyReason:       policyDecision.Reason,
+		PrimaryBackend:     primary.BackendName,
+		PrimaryRouteReason: primary.Reason,
+		EstimatedCost:      primary.EstimatedCost,
+		OverloadDegrade:    overloadDegrade,
+		QueueDepth:         int(s.inferInflight.Load()),
+	}
+	snapBytes, _ := json.Marshal(snap)
+	rr := primary.Reason
+	sb := primary.BackendName
+	s.updateLedgerPolicy(inferCtx, requestID, snapBytes, &rr, &sb)
+
+	if req.RequestType == types.RequestTypeRAG {
+		if err := s.runRAGPipeline(inferCtx, sw, &req); err != nil {
+			s.updateLedgerFailed(inferCtx, requestID)
+			var pe *ragPipelineError
+			if errors.As(err, &pe) {
+				s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", pe.trace)
+				writeError(w, pe.httpStatus, requestID, pe.errCode, pe.msg)
+				return
+			}
+			s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, "", "execution_failed")
+			writeError(w, http.StatusBadGateway, requestID, errCodeExecutionFailed, err.Error())
+			return
+		}
+	}
+
 	fallback := s.buildFallback(primary.BackendName, health)
 	start := time.Now()
 	s.sloEngine.RecordStart(requestID)
-	execution, err := s.reliability.ExecuteWithFallback(inferCtx, req, primary, fallback)
+	var execRes types.ExecutionResult
+	err = sw.Run(inferCtx, execution.StepBackendCall, primary.BackendName, map[string]any{"primary": primary.BackendName}, func() (map[string]any, error) {
+		var e error
+		execRes, e = s.reliability.ExecuteWithFallback(inferCtx, req, primary, fallback)
+		if e != nil {
+			return map[string]any{"status": execRes.Status}, e
+		}
+		return map[string]any{"status": execRes.Status, "backend": execRes.BackendName}, nil
+	})
 	if err != nil {
 		s.noteTimeoutForScaling(err)
+		s.updateLedgerFailed(inferCtx, requestID)
 		if st, ec, ok := inferBudgetHTTPStatus(inferCtx, err); ok {
 			log.Printf("event=infer_deadline request_id=%s tenant_id=%s backend=%s", requestID, req.TenantID, primary.BackendName)
 			s.emitInferTrace(traceID, spanID, traceStart, requestID, req.TenantID, primary.BackendName, "gateway_timeout")
@@ -465,7 +553,12 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeInferSuccess(w, inferSuccessParams{
+	_ = sw.Run(inferCtx, execution.StepFinalize, execRes.BackendName, map[string]any{"status": execRes.Status}, func() (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	s.markLedgerSuccess(inferCtx, requestID, execRes.BackendName, primary.Reason)
+
+	s.writeAIResponse(w, aiSuccessParams{
 		traceID:         traceID,
 		spanID:          spanID,
 		traceStart:      traceStart,
@@ -474,19 +567,107 @@ func (s *Server) infer(w http.ResponseWriter, r *http.Request) {
 		req:             req,
 		policyDecision:  policyDecision,
 		primary:         primary,
-		execution:       execution,
+		execution:       execRes,
 		executionStart:  start,
 		overloadDegrade: overloadDegrade,
 	})
 }
 
-type inferSuccessParams struct {
+func (s *Server) createLedgerRequest(ctx context.Context, traceID, requestID string, req types.AIRequest, now time.Time) {
+	if s.ledger == nil {
+		return
+	}
+	in, _ := json.Marshal(req.Input)
+	ctxb, _ := json.Marshal(req.Context)
+	full, _ := json.Marshal(req)
+	_ = s.ledger.CreateRequest(ctx, requests.RequestRow{
+		RequestID:     requestID,
+		TraceID:       traceID,
+		RequestType:   req.RequestType,
+		TenantID:      req.TenantID,
+		TaskType:      req.TaskType,
+		Priority:      req.Priority,
+		PipelineRef:   req.PipelineRef,
+		InputJSON:     in,
+		ContextJSON:   ctxb,
+		AIRequestJSON: full,
+		Status:        "running",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+}
+
+func (s *Server) updateLedgerFailed(ctx context.Context, requestID string) {
+	if s.ledger == nil {
+		return
+	}
+	st := "failed"
+	_ = s.ledger.UpdateRequest(ctx, requestID, requests.RequestPatch{
+		Status:    &st,
+		UpdatedAt: time.Now(),
+	})
+}
+
+func (s *Server) updateLedgerPolicy(ctx context.Context, requestID string, snap []byte, routeReason, backend *string) {
+	if s.ledger == nil {
+		return
+	}
+	_ = s.ledger.UpdateRequest(ctx, requestID, requests.RequestPatch{
+		PolicySnapshot:  snap,
+		RouteReason:     routeReason,
+		SelectedBackend: backend,
+		UpdatedAt:       time.Now(),
+	})
+}
+
+func (s *Server) markLedgerSuccess(ctx context.Context, requestID, backend, routeReason string) {
+	if s.ledger == nil {
+		return
+	}
+	st := "success"
+	rr := routeReason
+	be := backend
+	_ = s.ledger.UpdateRequest(ctx, requestID, requests.RequestPatch{
+		Status:          &st,
+		SelectedBackend: &be,
+		RouteReason:     &rr,
+		UpdatedAt:       time.Now(),
+	})
+}
+
+func ragQuery(req types.AIRequest) string {
+	if req.Context != nil {
+		if q, ok := req.Context["query"].(string); ok && strings.TrimSpace(q) != "" {
+			return strings.TrimSpace(q)
+		}
+	}
+	if req.Input != nil {
+		if t, ok := req.Input["text"].(string); ok {
+			return strings.TrimSpace(t)
+		}
+	}
+	return ""
+}
+
+func kbName(req types.AIRequest, cfg *config.Config) string {
+	if req.Context != nil {
+		if v, ok := req.Context["knowledge_base"].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if cfg != nil && len(cfg.KnowledgeBases) > 0 {
+		return cfg.KnowledgeBases[0].Name
+	}
+	return ""
+}
+
+type aiSuccessParams struct {
 	traceID         string
 	spanID          string
 	traceStart      time.Time
 	requestID       string
 	nowUnixMs       int64
-	req             types.InferenceRequest
+	req             types.AIRequest
 	policyDecision  types.PolicyDecision
 	primary         types.RouteDecision
 	execution       types.ExecutionResult
@@ -494,7 +675,7 @@ type inferSuccessParams struct {
 	overloadDegrade bool
 }
 
-func (s *Server) writeInferSuccess(w http.ResponseWriter, p inferSuccessParams) {
+func (s *Server) writeAIResponse(w http.ResponseWriter, p aiSuccessParams) {
 	chosenBackendCfg, _ := s.cfg.BackendByName(p.execution.BackendName)
 	endWall := time.Now()
 	latency := endWall.Sub(p.executionStart).Milliseconds()
@@ -512,16 +693,18 @@ func (s *Server) writeInferSuccess(w http.ResponseWriter, p inferSuccessParams) 
 	s.sloEngine.RecordFirstToken(p.requestID, firstTok)
 	s.sloEngine.RecordCompletion(p.requestID, compAt)
 
-	resp := types.InferenceResponse{
+	resp := types.AIResponse{
 		RequestID:         p.requestID,
 		TraceID:           p.traceID,
+		RequestType:       p.req.RequestType,
+		PipelineRef:       p.req.PipelineRef,
 		SelectedBackend:   p.execution.BackendName,
 		RouteReason:       p.primary.Reason,
 		PolicyReason:      p.policyDecision.Reason,
 		EffectivePriority: p.req.Priority,
 		Status:            p.execution.Status,
 		Result:            p.execution.Output,
-		Metrics: types.InferenceMetrics{
+		Metrics: types.AIMetrics{
 			TTFTMs:               0,
 			TPOTMs:               0,
 			CompletionLatencyMs:  latency,
@@ -651,6 +834,31 @@ func (s *Server) emitInferTrace(traceID, spanID string, start time.Time, request
 		Labels: map[string]string{
 			"request_id": requestID,
 			"tenant_id":  tenantID,
+			"backend":    backend,
+			"result":     result,
+		},
+	})
+}
+
+func (s *Server) emitInferStepTrace(traceID, requestID, tenantID, stepType, backend, stepStatus string, start time.Time, latencyMs int64) {
+	if !s.cfg.Telemetry.TracingEnabled {
+		return
+	}
+	end := start.UnixMilli() + latencyMs
+	result := "success"
+	if stepStatus != "success" {
+		result = "failed"
+	}
+	s.telemetry.EmitTrace(types.TraceRecord{
+		TraceID:   traceID,
+		SpanID:    traceutil.NewSpanID(),
+		Name:      "infer_step",
+		StartUnix: start.UnixMilli(),
+		EndUnix:   end,
+		Labels: map[string]string{
+			"request_id": requestID,
+			"tenant_id":  tenantID,
+			"step_type":  stepType,
 			"backend":    backend,
 			"result":     result,
 		},

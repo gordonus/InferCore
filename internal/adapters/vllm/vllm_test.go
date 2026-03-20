@@ -29,7 +29,7 @@ func TestInvoke_StreamRequestedDegradedWhenUpstreamReturnsJSON(t *testing.T) {
 
 	a := New(config.BackendConfig{Name: "v", Type: "vllm", Endpoint: srv.URL, TimeoutMS: 200})
 	resp, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{
+		AIRequest: types.AIRequest{
 			Input:   map[string]any{"text": "hi"},
 			Options: types.RequestOptions{Stream: true, MaxTokens: 32},
 		},
@@ -56,7 +56,7 @@ func TestInvoke_StreamSSEAccumulates(t *testing.T) {
 
 	a := New(config.BackendConfig{Name: "v", Type: "vllm", Endpoint: srv.URL, TimeoutMS: 2000})
 	resp, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{
+		AIRequest: types.AIRequest{
 			Input:   map[string]any{"text": "hi"},
 			Options: types.RequestOptions{Stream: true, MaxTokens: 32},
 		},
@@ -98,7 +98,7 @@ func TestInvoke_SendsBearerWhenAPIKeySet(t *testing.T) {
 		APIKey: "sk-secret", Headers: map[string]string{"X-Extra": "yes"},
 	})
 	_, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{Input: map[string]any{"text": "hi"}},
+		AIRequest: types.AIRequest{Input: map[string]any{"text": "hi"}},
 	})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -125,7 +125,7 @@ func TestInvoke_CustomAuthHeaderRawKey(t *testing.T) {
 		APIKey: "raw-key-value", AuthHeaderName: "api-key",
 	})
 	_, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{Input: map[string]any{"text": "hi"}},
+		AIRequest: types.AIRequest{Input: map[string]any{"text": "hi"}},
 	})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
@@ -168,7 +168,7 @@ func TestInvoke_Upstream5xxClassification(t *testing.T) {
 
 	a := New(config.BackendConfig{Name: "v", Type: "vllm", Endpoint: srv.URL, TimeoutMS: 200})
 	_, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{Input: map[string]any{"text": "hi"}},
+		AIRequest: types.AIRequest{Input: map[string]any{"text": "hi"}},
 	})
 	if err == nil {
 		t.Fatalf("expected error")

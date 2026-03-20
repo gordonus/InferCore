@@ -31,7 +31,7 @@ func (a *Adapter) Invoke(ctx context.Context, req types.BackendRequest) (types.B
 	case <-time.After(delay):
 	}
 
-	text, _ := req.InferenceRequest.Input["text"].(string)
+	text, _ := req.Input["text"].(string)
 	if text == "" {
 		text = "No text provided."
 	}

@@ -1,6 +1,6 @@
 # InferCore Architecture One-Pager
 
-> **Note:** This document is a **full Markdown copy** of the architectural overview in the repository root [`README.md`](../README.md) (through *Differentiators*). Prefer editing **README** first, then mirroring changes here so PDF/print exports stay aligned.
+> **Note:** This document mirrors the architectural overview in [`README.md`](../README.md). Prefer editing **README** first, then aligning this file so PDF/print exports stay consistent.
 
 ## Project definition
 
@@ -29,6 +29,7 @@ InferCore fills the missing **system decision layer** in typical serving stacks:
 - Request ingress and normalization
 - Routing decisions
 - Tenant and policy enforcement
+- **RAG orchestration** (optional): retrieval + rerank after routing, merge into model payload when `request_type: rag`
 - Fallback and reliability orchestration
 - Cost estimation and budget-based routing
 - AI SLO signal generation
@@ -55,6 +56,8 @@ Client / SDK
     ↓
 [ Router Engine ] ← route selection / fallback planning / cost-aware decision
     ↓
+[ Optional RAG ] ← retrieve + rerank when request_type=rag and knowledge_bases configured
+    ↓
 [ Execution Adapter Layer ] ← vLLM / OpenAI-compatible HTTP / Mock / …
     ↓
 Inference Backends
@@ -68,13 +71,17 @@ Parallel outputs:
 
 ## Request lifecycle
 
-1. Client sends an inference request to InferCore (`POST /infer`).
+1. Client sends an AI request to InferCore (`POST /infer`) — inference, RAG, or agent (preview).
 2. Gateway parses tenant, task type, priority, and payload.
 3. Policy engine evaluates quota, budget, priority, and guardrails.
-4. Router selects a backend using rules, health, overload state, and optional cost optimization.
-5. Execution adapter invokes the selected backend.
-6. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
-7. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
+4. Overload admission may reject or degrade before routing.
+5. Router selects a backend using rules, health, overload state, and optional cost optimization.
+6. For **`request_type: rag`**, retrieval and rerank run (file-backed knowledge bases in v1.5), then retrieved text is merged into the payload before the model call.
+7. Execution adapter invokes the selected backend.
+8. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
+9. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
+
+See the main [README](../README.md) for RAG configuration (`knowledge_bases`, `context.query`, ledger steps, and replay notes).
 
 ## Key differentiators
 

@@ -52,7 +52,7 @@ func TestAdapter_InvokeNonStream(t *testing.T) {
 	})
 
 	resp, err := a.Invoke(context.Background(), types.BackendRequest{
-		InferenceRequest: types.InferenceRequest{
+		AIRequest: types.AIRequest{
 			Input: map[string]any{"text": "hi"},
 		},
 	})

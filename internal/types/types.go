@@ -1,17 +1,45 @@
 package types
 
+// AI request classification (v1.5). Empty RequestType defaults to inference.
+const (
+	RequestTypeInference = "inference"
+	RequestTypeRAG       = "rag"
+	RequestTypeAgent     = "agent"
+)
+
+// Default pipeline refs when the client omits pipeline_ref.
+const (
+	DefaultPipelineInference = "inference/basic:v1"
+	DefaultPipelineRAG       = "rag/basic:v1"
+	DefaultPipelineAgent     = "agent/basic:v0"
+)
+
 type RequestOptions struct {
 	Stream    bool `json:"stream"`
 	MaxTokens int  `json:"max_tokens"`
 }
 
-type InferenceRequest struct {
-	RequestID string         `json:"request_id,omitempty"`
-	TenantID  string         `json:"tenant_id"`
-	TaskType  string         `json:"task_type"`
-	Priority  string         `json:"priority"`
-	Input     map[string]any `json:"input"`
-	Options   RequestOptions `json:"options"`
+// AIRequest is the unified ingress body for inference, RAG, and agent (preview) flows on POST /infer.
+type AIRequest struct {
+	RequestID   string         `json:"request_id,omitempty"`
+	RequestType string         `json:"request_type,omitempty"` // inference | rag | agent
+	PipelineRef string         `json:"pipeline_ref,omitempty"`
+	Context     map[string]any `json:"context,omitempty"`
+	TenantID    string         `json:"tenant_id"`
+	TaskType    string         `json:"task_type"`
+	Priority    string         `json:"priority"`
+	Input       map[string]any `json:"input"`
+	Options     RequestOptions `json:"options"`
+}
+
+// PolicySnapshot captures routing/policy inputs at decision time for replay and audit.
+type PolicySnapshot struct {
+	PolicyReason       string  `json:"policy_reason"`
+	PrimaryBackend     string  `json:"primary_backend"`
+	PrimaryRouteReason string  `json:"primary_route_reason"`
+	EstimatedCost      float64 `json:"estimated_cost"`
+	OverloadDegrade    bool    `json:"overload_degrade"`
+	QueueDepth         int     `json:"queue_depth"`
 }
 
 type RouteDecision struct {
@@ -45,7 +73,8 @@ type SLOSnapshot struct {
 	FallbackTriggered   bool  `json:"fallback_triggered"`
 }
 
-type InferenceMetrics struct {
+// AIMetrics are returned on successful AIRequest handling.
+type AIMetrics struct {
 	TTFTMs               int64   `json:"ttft_ms"`
 	TPOTMs               int64   `json:"tpot_ms"`
 	CompletionLatencyMs  int64   `json:"completion_latency_ms"`
@@ -64,24 +93,27 @@ type DegradeState struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-type InferenceResponse struct {
-	RequestID         string           `json:"request_id"`
-	TraceID           string           `json:"trace_id,omitempty"`
-	SelectedBackend   string           `json:"selected_backend"`
-	RouteReason       string           `json:"route_reason"`
-	PolicyReason      string           `json:"policy_reason,omitempty"`
-	EffectivePriority string           `json:"effective_priority,omitempty"`
-	Status            string           `json:"status"`
-	Result            map[string]any   `json:"result"`
-	Metrics           InferenceMetrics `json:"metrics"`
-	Fallback          FallbackState    `json:"fallback"`
-	Degrade           DegradeState     `json:"degrade"`
+// AIResponse is the success JSON body for POST /infer.
+type AIResponse struct {
+	RequestID         string         `json:"request_id"`
+	TraceID           string         `json:"trace_id,omitempty"`
+	RequestType       string         `json:"request_type,omitempty"`
+	PipelineRef       string         `json:"pipeline_ref,omitempty"`
+	SelectedBackend   string         `json:"selected_backend"`
+	RouteReason       string         `json:"route_reason"`
+	PolicyReason      string         `json:"policy_reason,omitempty"`
+	EffectivePriority string         `json:"effective_priority,omitempty"`
+	Status            string         `json:"status"`
+	Result            map[string]any `json:"result"`
+	Metrics           AIMetrics      `json:"metrics"`
+	Fallback          FallbackState  `json:"fallback"`
+	Degrade           DegradeState   `json:"degrade"`
 }
 
 type PolicyDecision struct {
 	Allowed    bool
 	Reason     string
-	Normalized InferenceRequest
+	Normalized AIRequest
 }
 
 type RuntimeState struct {
@@ -92,8 +124,9 @@ type RuntimeState struct {
 	OverloadDegrade bool
 }
 
+// BackendRequest wraps AIRequest for model adapters (embedding exposes Input, Options, etc.).
 type BackendRequest struct {
-	InferenceRequest InferenceRequest
+	AIRequest
 }
 
 type BackendResponse struct {
@@ -136,4 +169,23 @@ type ScalingSignals struct {
 	TTFTDegradationRatio   float64  `json:"ttft_degradation_ratio"`
 	RecentFallbackRate     float64  `json:"recent_fallback_rate"`
 	BackendSaturationHints []string `json:"backend_saturation_hints"`
+}
+
+// ReliabilityExecuteOptions tweaks backend execution (e.g. replay-exact forcing).
+type ReliabilityExecuteOptions struct {
+	ForcePrimaryBackend string
+	NoFallback          bool
+}
+
+// RetrievalChunk is one retrieved passage for RAG.
+type RetrievalChunk struct {
+	Text   string            `json:"text"`
+	Source string            `json:"source,omitempty"`
+	Score  float64           `json:"score,omitempty"`
+	Extra  map[string]string `json:"extra,omitempty"`
+}
+
+// RetrievalResult is the output of a retrieval adapter.
+type RetrievalResult struct {
+	Chunks []RetrievalChunk `json:"chunks"`
 }

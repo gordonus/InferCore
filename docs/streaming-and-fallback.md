@@ -18,3 +18,7 @@ The HTTP response from InferCore remains **JSON** (aggregated `result.text`), no
 - **true**: fallback backends receive the same `stream` flag as the primary (use only if all backends support compatible streaming).
 
 Primary failures that match configured fallback triggers still use the reliability fallback chain; only the stream flag behavior changes.
+
+## RAG and streaming
+
+For `request_type: rag`, **retrieve** and **rerank** run **before** the chat completion call. They are non-streaming steps; only the final model invocation honors `options.stream` and the streaming behavior described above. The gateway timeout (`server.request_timeout_ms`) applies to the whole chain (policy + route + retrieve + rerank + backend).

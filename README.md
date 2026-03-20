@@ -25,6 +25,7 @@ InferCore fills the missing **system decision layer** in typical serving stacks:
 - Request ingress and normalization
 - Routing decisions
 - Tenant and policy enforcement
+- **RAG orchestration** (optional): retrieval + rerank after routing, then merge into the model payload (`request_type: rag`; file-backed knowledge bases in v1.5)
 - Fallback and reliability orchestration
 - Cost estimation and budget-based routing
 - AI SLO signal generation
@@ -59,6 +60,11 @@ Client / SDK
 [ Router Engine ] ← route rules / health-aware backend choice / cost-aware pick
     ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
+│ Optional RAG (request_type=rag, when configured)                         │
+│   retrieve (KB) → rerank (e.g. noop) → merge into input.*                │
+└──────────────────────────────────────────────────────────────────────────┘
+    ↓
+┌──────────────────────────────────────────────────────────────────────────┐
 │ Reliability · execution & fallback                                       │
 │   • ExecuteWithFallback: primary backend then fallback_rules chain       │
 │   • Triggers: timeout, backend_unhealthy, backend_error                  │
@@ -79,13 +85,15 @@ Parallel outputs:
 
 ## Request lifecycle
 
-1. Client sends an inference request to InferCore (`POST /infer`).
+1. Client sends an AI request to InferCore (`POST /infer`) — same endpoint for **inference**, **RAG**, and **agent (preview)**.
 2. Gateway parses tenant, task type, priority, and payload.
 3. Policy engine evaluates quota, budget, priority, and guardrails.
-4. Router selects a backend using rules, health, overload state, and optional cost optimization.
-5. Execution adapter invokes the selected backend.
-6. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
-7. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
+4. Overload admission (`reliability.overload`) may reject or degrade before routing.
+5. Router selects a backend using rules, health, overload state, and optional cost optimization.
+6. **If `request_type` is `rag` and `knowledge_bases` are configured**, InferCore runs **retrieve** then **rerank**, and merges retrieved text into the payload (e.g. `input.retrieved_context`) before the model call.
+7. Execution adapter invokes the selected backend.
+8. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
+9. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
 
 ## Differentiators
 
@@ -99,11 +107,54 @@ Parallel outputs:
 
 This repository includes:
 
-- In-scope/out-of-scope document (`docs/scope.md`)
-- YAML configuration draft
-- OpenAPI draft for key endpoints
-- Go interface contracts for core modules
-- Minimal runnable HTTP service
+- YAML configuration examples and OpenAPI draft (`api/openapi.yaml`)
+- Go implementation of the control plane (policy, routing, reliability, RAG retrieval, adapters)
+- Documentation under `docs/` (architecture one-pager, observability, load testing, streaming)
+
+## v1.5: AI Request model, ledger, RAG, CLI
+
+- **AI Request** — Optional fields on `POST /infer`: `request_type` (`inference` \| `rag` \| `agent`), `pipeline_ref` (defaults: `inference/basic:v1`, `rag/basic:v1`, `agent/basic:v0`), and `context` (RAG: `query`, `knowledge_base`; agent: tool hints for policy).
+- **Request ledger** — Enable with `ledger.enabled` and `driver: memory`, `sqlite` (`path`), or `postgres` (`dsn`). Persists full normalized `AIRequest` as `ai_request_json` (plus `input`/`context` JSON), `policy_snapshot` after routing, and per-step records for audit and replay.
+- **RAG (supported)** — Set `request_type: rag` and define `knowledge_bases` with `type: file` and a directory path (see `examples/kb`). Execution order: policy → overload admission → route → **retrieve** → **rerank** (`rag.rerank.type`, default `noop`) → chat completion on the selected backend. Provide user text via `input.text` and/or `context.query`; retrieved passages are merged into `input.retrieved_context` for the downstream model.
+- **Agent (preview)** — Tenant limits (`max_steps`, `max_tool_calls`, `allowed_tools`, …) are enforced in policy when `features.agent_enabled` is true; execution returns **501** `agent_not_implemented` until a tool loop ships.
+- **CLI** (same binary):
+
+```bash
+infercore serve                    # HTTP gateway (default when no subcommand)
+infercore trace <request_id>       # dump ledger request + steps JSON
+infercore replay <request_id> --mode exact|current
+infercore eval run --dataset examples/queries.json --pipeline inference/basic:v1
+# With server API key auth (or env INFERCORE_API_KEY):
+infercore eval run --dataset examples/queries.json --api-key "$INFERCORE_API_KEY"
+```
+
+### Replay semantics (`infercore replay`)
+
+- **`exact`** — Uses the **policy snapshot** in the ledger to force the **primary backend** and **disables fallback**. RAG requests still **re-run retrieve + rerank**; if knowledge-base files or retrieval config changed, results may differ from the original online call. Routing does not use live health probes in this mode.
+- **`current`** — Re-evaluates **policy** and **router**. The replay harness treats **all backends as healthy** (see `internal/replay`); production `/infer` uses **cached health probes** for routing, so routes can differ from a `current` replay on the same machine.
+
+### Telemetry
+
+When `telemetry.tracing_enabled` is true, OTLP/log exporters receive **`infer_request`** (whole handler) and per-step **`infer_step`** spans (`step_type`, `backend`, `result`).
+
+### Configuration checklists (minimal vs production)
+
+Use this as a rough guide—not every deployment fits two buckets. Items reflect keys in `configs/infercore.example.yaml`.
+
+| Area | Minimal (local demo / first run) | Production-oriented |
+|------|----------------------------------|----------------------|
+| **Server** | `server.host` / `server.port`; set `server.request_timeout_ms` to a value that covers your slowest expected path. | Tune `server.http.*` timeouts if you use long-lived connections; align `request_timeout_ms` with upstream SLAs and load balancer idle timeouts. |
+| **Backends** | At least **one** backend in `backends` with a valid `type` (`mock` is enough to learn the control plane). | Real adapters (`vllm`, `openai_compatible`, …): correct `endpoint`, `timeout_ms`, `max_concurrency`, auth (`api_key` / headers), `health_path` for your provider. |
+| **Routing** | `routing.default_backend` must name an entry in `backends`. Add `routing.rules` only when you need more than the default. | Explicit rules per tenant/task, and verify `default_backend` as safe last resort. |
+| **Tenants** | Optional; policy still runs—ensure any `tenant_id` you send in JSON is consistent with how you intend to use policy. | Define `tenants` so quotas, classes, and limits match your product; keep tenant IDs stable across environments. |
+| **Reliability** | Defaults (`reliability.overload`, `fallback_rules`) from the example are fine to start. | Model `fallback_rules` on real failure modes; choose `overload.action: reject` vs `degrade` for your capacity story; set `stream_fallback_enabled` deliberately. |
+| **Telemetry** | `exporter: log` and metrics on is enough to debug. | OTLP (`otlp-http` / `otlp-http-json`) with `otlp_endpoint`, sensible batching; keep `metrics_enabled` / `tracing_enabled` aligned with observability cost. |
+| **Ledger** | `ledger.enabled: false` or `driver: memory` for throwaway data. | `sqlite` with a persistent `path`, or `postgres` with `dsn`, for audit, `infercore trace` / `replay`, and multi-replica shared state. |
+| **Ingress security** | Leave `infercore_api_key` unset for local use. | Set `infercore_api_key` (or `INFERCORE_API_KEY`); restrict network access; use the same key for `infercore eval run --api-key` / `INFERCORE_API_KEY`. |
+| **RAG** | Omit `knowledge_bases` unless you call `request_type: rag`. | File-backed KB paths mounted in containers; document `context.knowledge_base` and query fields for clients. |
+| **Health & SLO** | Defaults for `health_cache_ttl_ms` / SLO store are fine. | Tune health probe cadence vs routing churn; size `slo` store for your traffic if you rely on `/status` or metrics. |
+
+**Minimal viable config (conceptually):** one backend + `routing.default_backend` pointing to it + valid YAML for telemetry exporter and reliability overload action. Everything else is layered behavior.
 
 ## Quickstart
 
@@ -169,7 +220,7 @@ Status:
 curl -s http://localhost:8080/status
 ```
 
-Infer:
+Infer (plain inference):
 
 ```bash
 curl -s -X POST http://localhost:8080/infer \
@@ -179,6 +230,22 @@ curl -s -X POST http://localhost:8080/infer \
     "task_type": "simple",
     "priority": "normal",
     "input": {"text": "Summarize this article"},
+    "options": {"stream": false, "max_tokens": 256}
+  }'
+```
+
+RAG (requires `knowledge_bases` in config, e.g. pointing at `examples/kb`):
+
+```bash
+curl -s -X POST http://localhost:8080/infer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_type": "rag",
+    "tenant_id": "team-a",
+    "task_type": "simple",
+    "priority": "normal",
+    "context": {"query": "What is InferCore?", "knowledge_base": "demo"},
+    "input": {"text": "Answer using retrieved context."},
     "options": {"stream": false, "max_tokens": 256}
   }'
 ```
@@ -209,7 +276,7 @@ bash ./scripts/smoke.sh
 
 ## Core Endpoints
 
-- `POST /infer`
+- `POST /infer` — unified JSON ingress for **inference**, **RAG**, and **agent (preview)** (`request_type` + `context` / `input` as documented above)
 - `GET /health`
 - `GET /status`
 - `GET /metrics`
@@ -228,7 +295,7 @@ High-level summary of what the running service does today. For streaming details
 
 ### Request timeouts & HTTP server
 
-- **`server.request_timeout_ms`** — wall-clock budget for each `/infer` after JSON body validation (policy + routing + backend). If this fires: **504** and `error.code=gateway_timeout`. If a per-backend **`timeout_ms`** fires first: **502** `execution_failed`.
+- **`server.request_timeout_ms`** — wall-clock budget for each `/infer` after JSON body validation (**policy + routing + optional RAG retrieve/rerank + backend**). If this fires: **504** and `error.code=gateway_timeout`. If a per-backend **`timeout_ms`** fires first: **502** `execution_failed`.
 - **`cmd/infercore`** sets `http.Server` `ReadTimeout` / `WriteTimeout` / `IdleTimeout` from `server.http.{read,write,idle}_timeout_ms` when set; otherwise derives from `request_timeout_ms` plus conventional slack (read / write / keep-alive).
 
 ### Tenant policy & routing
@@ -236,6 +303,14 @@ High-level summary of what the running service does today. For streaming details
 - **Policy:** reject unknown tenants, per-request budget gate (light estimate), per-tenant RPS limit (in-memory, 1s window), priority normalized from tenant defaults. **`priority`** may be omitted on `/infer`; it is filled from tenant config.
 - **Routing:** rules by tenant class / task type / priority.
 - **Health-aware routing:** skips backends failing `adapter.Health`, cached with `server.health_cache_ttl_ms` (same cache drives `/status` backend fields). If the default backend is unhealthy, uses the first healthy backend in config order (`healthy-fallback-order`). If none healthy: `route_error` on `/infer`.
+
+### RAG
+
+- **When:** `request_type: rag` on `POST /infer`.
+- **Config:** `knowledge_bases[]` with `type: file` and `path` to a directory of text/markdown; optional `context.knowledge_base` selects the KB by name (otherwise the first listed KB is used). Set `rag.rerank.type` (v1.5: `noop` or future rerankers).
+- **Pipeline:** after routing, ledger steps **retrieve** and **rerank** run inside the same **`server.request_timeout_ms`** budget as the backend call. Retrieved chunks are merged into `input` (including `retrieved_context`) before the chat adapter runs.
+- **Errors:** `400` `rag_not_configured` if KBs are missing or misconfigured; `400` `invalid_request` if the query text is empty (`input.text` / `context.query`). Retrieval/rerank failures surface as `502` `execution_failed` with the upstream error message.
+- **Replay:** `infercore replay --mode exact` re-runs retrieve + rerank; changing KB files on disk can change results versus the original online call (see **Replay semantics** under v1.5 above).
 
 ### Overload, cost, reliability
 
@@ -266,7 +341,7 @@ High-level summary of what the running service does today. For streaming details
 
 - **SLO store** (in-memory, bounded by `slo.max_records` / `slo.max_age_ms`): TTFT, TPOT (when adapter provides it), completion latency, fallback markers.
 - **Telemetry exporters:** `log`, `otlp-http-stub`, `otlp-http` (OTLP/HTTP protobuf), `otlp-http-json` (legacy JSON). Switches: `telemetry.metrics_enabled`, `telemetry.tracing_enabled`. OTLP: `otlp_flush_interval_ms`, `otlp_timeout_ms` (batching for `otlp-http`).
-- Exporter emits metric/event logs per completed inference; trace hooks add trace/span IDs and result labels.
+- Exporter emits metric/event logs per completed inference; trace hooks add trace/span IDs and result labels. When tracing is enabled, per-step **`infer_step`** records are emitted for pipeline steps (including `retrieve` / `rerank` for RAG).
 - **`GET /status`:** exporter summary and **`scaling_signals`** (queue depth, timeout hint, rolling TTFT/fallback from SLO, `max_concurrency` hints).
 - **`GET /metrics`:** Prometheus `client_golang` — e.g. `infercore_requests_total`, `infercore_infer_inflight`, `infercore_http_requests_total`, plus `infercore_scaling_*` gauges aligned with scaling signals.
 - HTTP requests: `infercore_http_requests_total` with path/method/status labels.
@@ -299,13 +374,12 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 ## Documents
 
 - License: [`LICENSE`](LICENSE) (Apache-2.0)
-- Architecture (full one-pager copy for print/PDF): `docs/architecture-one-pager.md`
-- Scope: `docs/scope.md`
-- Config example: `configs/infercore.example.yaml`
-- Observability: `docs/observability.md`
-- Load testing: `docs/load-testing.md`
-- Streaming & fallback: `docs/streaming-and-fallback.md`
-- Planned hardening: `docs/future-work.md`
+- Architecture (one-pager for print/PDF): [`docs/architecture-one-pager.md`](docs/architecture-one-pager.md)
+- Config example: [`configs/infercore.example.yaml`](configs/infercore.example.yaml)
+- Observability: [`docs/observability.md`](docs/observability.md)
+- Load testing: [`docs/load-testing.md`](docs/load-testing.md)
+- Streaming & fallback: [`docs/streaming-and-fallback.md`](docs/streaming-and-fallback.md)
+- API draft: [`api/openapi.yaml`](api/openapi.yaml)
 
 ## License
 

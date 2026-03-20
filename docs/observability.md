@@ -12,7 +12,7 @@ This document describes the observability surface implemented in InferCore.
 
 ## Request timeouts
 
-- `server.request_timeout_ms` bounds policy + routing + backend execution **after** JSON decode on `POST /infer`. When this budget is exceeded, the API returns **504** with `error.code=gateway_timeout`. If a shorter **per-backend** `timeout_ms` fires first, the response stays **502** `execution_failed`.
+- `server.request_timeout_ms` bounds policy + routing + **optional RAG retrieve/rerank** + backend execution **after** JSON decode on `POST /infer`. When this budget is exceeded, the API returns **504** with `error.code=gateway_timeout`. If a shorter **per-backend** `timeout_ms` fires first, the response stays **502** `execution_failed`.
 - `server.http.read_timeout_ms`, `server.http.write_timeout_ms`, `server.http.idle_timeout_ms` optionally set `net/http.Server` timeouts (milliseconds). Zero or omitted → defaults derived from `request_timeout_ms` in `cmd/infercore` (read includes extra slack for large/slow request bodies; write includes slack after the infer deadline).
 - Adapter `Health` checks use their own `server.health_check_per_backend_ms` budget on `context.Background()` so a tight infer deadline does not invalidate cached health results.
 
@@ -50,22 +50,30 @@ In addition, telemetry event export emits:
 
 ## Traces (Basic Hooks)
 
-InferCore emits a trace record per `/infer` lifecycle using the telemetry exporter.
+InferCore emits trace records using the telemetry exporter.
 
-### Trace identity
+### Request span
 
 - `trace_id`: generated per request
-- `span_id`: generated per request
+- `span_id`: generated per request (request span)
 - `name`: `infer_request`
 
-### Trace labels
+#### Labels (`infer_request`)
 
 - `request_id`
 - `tenant_id`
 - `backend`
 - `result`
 
-### Typical `result` values
+### Step spans (RAG and pipeline)
+
+When `telemetry.tracing_enabled` is true, additional records use `name: infer_step` with labels:
+
+- `step_type` — e.g. `normalize`, `policy_check`, `retrieve`, `rerank`, `backend_call`, …
+- `backend` — adapter name when relevant
+- `result` — `success` or `failed` (failed includes policy rejection and execution errors)
+
+### Typical `result` values (`infer_request`)
 
 - `success`
 - `method_not_allowed`
@@ -77,6 +85,8 @@ InferCore emits a trace record per `/infer` lifecycle using the telemetry export
 - `policy_error`
 - `policy_rejected`
 - `route_error`
+- `rag_not_configured`
+- `retrieve_failed` / `rerank_failed` (RAG path)
 - `execution_failed`
 
 ## SLO Signals (in-memory engine)
@@ -108,7 +118,7 @@ These fields can be used to correlate API responses with logs/events/traces.
   - `otlp-http` — **OpenTelemetry SDK** OTLP/HTTP **protobuf** to a standard Collector (`/v1/traces`, `/v1/metrics`)
   - `otlp-http-json` — legacy JSON payloads (non-standard OTLP; for custom bridges only)
 - Exporter status summary is exposed via `GET /status` under `telemetry`.
-- Trace model is basic (single span per completed `/infer`); span IDs are SDK-generated with `infercore.trace_id` / `infercore.span_id` attributes for correlation.
+- Request-level trace is one `infer_request` record per `/infer`; optional **`infer_step`** records cover substeps (including RAG). Exact OTLP mapping depends on the exporter implementation.
 - `EmitEvent` is not mapped to OTLP Logs when using `otlp-http` (no-op for events on that exporter).
 
 ## Reliability Trigger Reference

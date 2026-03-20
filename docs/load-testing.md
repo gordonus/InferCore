@@ -107,6 +107,10 @@ Content-Type: application/json
 vegeta attack -rate=200 -duration=30s -targets=targets.txt | vegeta report
 ```
 
+## RAG load tests
+
+The default payload is plain inference. To load-test **RAG**, use a JSON body with `request_type: rag`, `context.query` / `input.text`, and `context.knowledge_base` matching your config, and ensure `knowledge_bases` is enabled in the InferCore YAML (see the main README).
+
 ## Troubleshooting
 
 ### `connection refused` and huge RPS / `NaN` from `hey`

@@ -1,0 +1,17 @@
+[
+  {
+    "tenant_id": "team-a",
+    "task_type": "simple",
+    "priority": "normal",
+    "input": { "text": "hello" },
+    "options": { "stream": false, "max_tokens": 128 },
+    "expected_backend": "small-model"
+  },
+  {
+    "tenant_id": "team-a",
+    "task_type": "simple",
+    "input": { "text": "second eval row" },
+    "options": { "stream": false, "max_tokens": 256 },
+    "expected_backend": "small-model"
+  }
+]

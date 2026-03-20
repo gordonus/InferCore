@@ -14,6 +14,8 @@ import (
 	"github.com/infercore/infercore/internal/upstream"
 )
 
+var _ interfaces.ReliabilityManager = (*Manager)(nil)
+
 type Manager struct {
 	cfg      *config.Config
 	adapters map[string]interfaces.BackendAdapter
@@ -28,10 +30,31 @@ func NewManager(cfg *config.Config, adapters map[string]interfaces.BackendAdapte
 
 func (m *Manager) ExecuteWithFallback(
 	ctx context.Context,
-	req types.InferenceRequest,
+	req types.AIRequest,
 	primary types.RouteDecision,
 	fallback []types.RouteDecision,
 ) (types.ExecutionResult, error) {
+	return m.ExecuteWithFallbackOpts(ctx, req, primary, fallback, types.ReliabilityExecuteOptions{})
+}
+
+func (m *Manager) ExecuteWithFallbackOpts(
+	ctx context.Context,
+	req types.AIRequest,
+	primary types.RouteDecision,
+	fallback []types.RouteDecision,
+	opts types.ReliabilityExecuteOptions,
+) (types.ExecutionResult, error) {
+	if name := strings.TrimSpace(opts.ForcePrimaryBackend); name != "" {
+		primary = types.RouteDecision{
+			BackendName:   name,
+			Reason:        "forced_primary",
+			EstimatedCost: primary.EstimatedCost,
+			FallbackChain: nil,
+		}
+		if opts.NoFallback {
+			fallback = nil
+		}
+	}
 	candidates := make([]types.RouteDecision, 0, 1+len(fallback))
 	candidates = append(candidates, primary)
 	candidates = append(candidates, fallback...)
@@ -53,11 +76,11 @@ func (m *Manager) ExecuteWithFallback(
 
 		invokeReq := req
 		if i > 0 && !m.cfg.Reliability.StreamFallbackEnabled && req.Options.Stream {
-			invokeReq = cloneInferenceNonStream(req)
+			invokeReq = cloneAINonStream(req)
 		}
 
 		invokeCtx, cancel := context.WithTimeout(ctx, time.Duration(backendCfg.TimeoutMS)*time.Millisecond)
-		resp, err := adapter.Invoke(invokeCtx, types.BackendRequest{InferenceRequest: invokeReq})
+		resp, err := adapter.Invoke(invokeCtx, types.BackendRequest{AIRequest: invokeReq})
 		cancel()
 		if err == nil {
 			return types.ExecutionResult{
@@ -135,7 +158,7 @@ func classifyError(err error) string {
 	return fallback.TriggerBackendError
 }
 
-func cloneInferenceNonStream(req types.InferenceRequest) types.InferenceRequest {
+func cloneAINonStream(req types.AIRequest) types.AIRequest {
 	out := req
 	out.Options.Stream = false
 	return out
