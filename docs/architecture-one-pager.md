@@ -1,31 +1,28 @@
 # InferCore Architecture One-Pager
 
-## Project Definition
+> **Note:** This document is a **full Markdown copy** of the architectural overview in the repository root [`README.md`](../README.md) (sections through *Differentiators* / *Related products*). Prefer editing **README** first, then mirroring changes here so PDF/print exports stay aligned.
 
-InferCore is an open-source AI Inference Control Plane.
+## Project definition
 
-It runs above model serving and data plane systems and provides:
+InferCore is an open-source **AI Inference Control Plane**: a decision layer that sits **above** model serving and data plane systems.
 
-- Intelligent routing
-- Cost-aware decisions
-- Fallback and degrade orchestration
-- AI-native SLO signals
-- Multi-tenant policy enforcement
-- Observability and scaling-signal outputs
+It provides intelligent routing, cost-aware decisions, fallback and degrade orchestration, AI-native SLO signals, multi-tenant policy enforcement, and observability / scaling-signal exports.
 
-InferCore is **not** a model server. It does not execute token generation and does not replace vLLM, Triton, Ray Serve, or KServe.
+**InferCore is not a model server.** It does not run token generation and does not replace vLLM, Triton, Ray Serve, or KServe.
 
-## Design Goals
+## Design goals
 
-InferCore addresses the missing system decision layer in existing serving stacks:
+InferCore fills the missing **system decision layer** in typical serving stacks:
 
-- **Route**: Send different requests to different backends/models
-- **Protect**: Gracefully degrade on timeout, overload, or failure
-- **Optimize**: Trade off latency, quality, and cost with explicit policy
-- **Signal**: Export TTFT, TPOT, queue depth, fallback rate, and related AI-native signals
-- **Isolate**: Support tenant priority, quota, budget, and fairness
+| Goal | Meaning |
+|------|---------|
+| **Route** | Send different requests to different backends/models |
+| **Protect** | Degrade gracefully on timeout, overload, or failure |
+| **Optimize** | Trade off latency, quality, and cost with explicit policy |
+| **Signal** | Export TTFT, TPOT, queue depth, fallback rate, and related AI-native metrics |
+| **Isolate** | Tenant priority, quota, budget, and fairness |
 
-## System Boundaries
+## System boundaries
 
 ### InferCore owns
 
@@ -35,17 +32,17 @@ InferCore addresses the missing system decision layer in existing serving stacks
 - Fallback and reliability orchestration
 - Cost estimation and budget-based routing
 - AI SLO signal generation
-- Metrics/traces/events export
+- Metrics / traces / events export
 
 ### InferCore does not own
 
 - Model inference execution
 - CUDA/GPU kernel optimization
-- Training and MLOps pipeline
-- Actual autoscaling execution
-- Advanced dashboards and long-term analytics
+- Training and MLOps pipelines
+- Executing autoscaling (it can **export signals** for HPA/KEDA/custom autoscalers)
+- Advanced dashboards and long-term analytics stores
 
-## High-Level Architecture
+## High-level architecture
 
 ```text
 Client / SDK
@@ -58,72 +55,46 @@ Client / SDK
     ↓
 [ Router Engine ] ← route selection / fallback planning / cost-aware decision
     ↓
-[ Execution Adapter Layer ] ← vLLM / Triton / Ray Serve / Mock
+[ Execution Adapter Layer ] ← vLLM / OpenAI-compatible HTTP / Mock / …
     ↓
 Inference Backends
 
 Parallel outputs:
-- Metrics Exporter
-- Trace/Event Exporter
-- AI SLO Signal Engine
-- Scaling Signals Exporter
+- Metrics exporter (Prometheus text on /metrics)
+- Trace / event exporters (configurable telemetry backends)
+- In-memory AI SLO engine (bounded store; snapshots on responses)
+- Scaling signals (/status.scaling_signals + infercore_scaling_* gauges)
 ```
 
-## Core Flow
+## Request lifecycle
 
-1. Client sends an inference request to InferCore.
-2. Gateway parses tenant, task type, priority, and metadata.
-3. Policy Engine evaluates quota, budget, priority, and guardrails.
-4. Router Engine selects a route based on cost, SLO targets, and backend state.
-5. Execution Adapter invokes the selected backend.
-6. On timeout/failure, Reliability Policy triggers fallback/degrade.
-7. InferCore records and exports TTFT, TPOT, latency, fallback, and cost signals.
+1. Client sends an inference request to InferCore (`POST /infer`).
+2. Gateway parses tenant, task type, priority, and payload.
+3. Policy engine evaluates quota, budget, priority, and guardrails.
+4. Router selects a backend using rules, health, overload state, and optional cost optimization.
+5. Execution adapter invokes the selected backend.
+6. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
+7. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
 
-## Key Differentiators
+## Key differentiators
 
-### 1) Cost-aware routing
-
-InferCore answers not only "can this run?" but also "should this use the expensive model?"
-
-### 2) AI-native SLO
-
-InferCore tracks:
-
-- TTFT
-- TPOT
-- Completion latency
-- Fallback rate
-- Invalid output rate
-
-### 3) Reliability orchestration
-
-InferCore supports:
-
-- Timeout handling
-- Fallback chains
-- Degrade mode
-- Queue overflow protection
-
-### 4) Multi-tenant policy
-
-InferCore supports:
-
-- Tenant priority
-- Budget classes
-- Quota and fairness
-- Noisy-neighbor protection
-
-### 5) Scaling signals
-
-InferCore does not scale directly, but exports:
-
-- Queue depth
-- TTFT degradation
-- Timeout spikes
-- Fallback spikes
-
-These signals can be consumed by Kubernetes HPA, KEDA, or custom autoscalers.
+1. **Cost-aware routing** — Not only “can this run?” but “should this use the expensive model?” within budget and compatibility constraints.
+2. **AI-native SLO** — TTFT, TPOT, completion latency, fallback markers; rolling hints exposed for operators (`/status`, Prometheus).
+3. **Reliability orchestration** — Per-backend timeouts, configurable fallback chains, overload reject/degrade, health-aware routing.
+4. **Multi-tenant policy** — Tenant classes, priorities, per-request budget estimates, per-tenant RPS windows (in-memory per replica).
+5. **Scaling signals** — Queue depth, timeout-spike hints, TTFT degradation ratio, recent fallback rate, optional `max_concurrency` hints from config — intended for HPA/KEDA or custom autoscalers (**per-replica** unless you add shared state).
 
 ## Scaling signals (implementation)
 
-The service exposes `scaling_signals` on `GET /status` and matching `infercore_scaling_*` Prometheus gauges (queue depth, timeout spike hint, rolling TTFT/fallback aggregates, optional `max_concurrency` hints). These are intended for HPA/KEDA or custom autoscalers; they reflect **per-replica** in-memory state unless extended with shared stores.
+The service exposes `scaling_signals` on `GET /status` and matching `infercore_scaling_*` Prometheus gauges (queue depth, timeout spike hint, rolling TTFT/fallback aggregates, optional `max_concurrency` hints). These are intended for HPA/KEDA or custom autoscalers; they reflect **per-replica** in-memory state unless extended with shared stores. See [observability.md](./observability.md) for metric and status field details.
+
+## Related products
+
+- **InferCore** — runs the **decision layer** (how requests are routed, protected, and metered).
+- **MicroWatch** (if you use it in your stack) — oriented toward **deep observability and analysis** (what happened, why, cost/SLO health). One-line split: *InferCore runs the plane; MicroWatch explains the run.*
+
+## Further reading
+
+- [README.md](../README.md) — full project quickstart, runtime behavior, and document index
+- [scope.md](./scope.md) — in-scope / out-of-scope
+- [observability.md](./observability.md) — metrics, status, timeouts

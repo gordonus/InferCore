@@ -1,16 +1,94 @@
 # InferCore
 
-InferCore is an open-source AI Inference Control Plane.
+InferCore is an open-source **AI Inference Control Plane**: a decision layer that sits **above** model serving and data plane systems.
 
-It runs above model serving/data plane systems and provides intelligent routing, cost-aware decisions, fallback/degrade orchestration, AI-native SLO signals, multi-tenant policy enforcement, and telemetry exports.
+It provides intelligent routing, cost-aware decisions, fallback and degrade orchestration, AI-native SLO signals, multi-tenant policy enforcement, and observability / scaling-signal exports.
 
-InferCore is not a model server and does not replace vLLM, Triton, Ray Serve, or KServe.
+**InferCore is not a model server.** It does not run token generation and does not replace vLLM, Triton, Ray Serve, or KServe.
+
+## Design goals
+
+InferCore fills the missing **system decision layer** in typical serving stacks:
+
+| Goal | Meaning |
+|------|---------|
+| **Route** | Send different requests to different backends/models |
+| **Protect** | Degrade gracefully on timeout, overload, or failure |
+| **Optimize** | Trade off latency, quality, and cost with explicit policy |
+| **Signal** | Export TTFT, TPOT, queue depth, fallback rate, and related AI-native metrics |
+| **Isolate** | Tenant priority, quota, budget, and fairness |
+
+## System boundaries
+
+### InferCore owns
+
+- Request ingress and normalization
+- Routing decisions
+- Tenant and policy enforcement
+- Fallback and reliability orchestration
+- Cost estimation and budget-based routing
+- AI SLO signal generation
+- Metrics / traces / events export
+
+### InferCore does not own
+
+- Model inference execution
+- CUDA/GPU kernel optimization
+- Training and MLOps pipelines
+- Executing autoscaling (it can **export signals** for HPA/KEDA/custom autoscalers)
+- Advanced dashboards and long-term analytics stores
+
+## Architecture
+
+```text
+Client / SDK
+    ↓
+[ InferCore Gateway ]
+    ↓
+[ Request Normalizer ]
+    ↓
+[ Policy Engine ] ← tenant / budget / priority / guardrails
+    ↓
+[ Router Engine ] ← route selection / fallback planning / cost-aware decision
+    ↓
+[ Execution Adapter Layer ] ← vLLM / OpenAI-compatible HTTP / Mock / …
+    ↓
+Inference Backends
+
+Parallel outputs:
+- Metrics exporter (Prometheus text on /metrics)
+- Trace / event exporters (configurable telemetry backends)
+- In-memory AI SLO engine (bounded store; snapshots on responses)
+- Scaling signals (/status.scaling_signals + infercore_scaling_* gauges)
+```
+
+## Request lifecycle
+
+1. Client sends an inference request to InferCore (`POST /infer`).
+2. Gateway parses tenant, task type, priority, and payload.
+3. Policy engine evaluates quota, budget, priority, and guardrails.
+4. Router selects a backend using rules, health, overload state, and optional cost optimization.
+5. Execution adapter invokes the selected backend.
+6. On timeout or classified failure, reliability rules may trigger fallback or degrade behavior.
+7. InferCore records TTFT/TPOT/latency/fallback (where available) and exports metrics, events, and traces as configured.
+
+## Differentiators
+
+1. **Cost-aware routing** — Not only “can this run?” but “should this use the expensive model?” within budget and compatibility constraints.
+2. **AI-native SLO** — TTFT, TPOT, completion latency, fallback markers; rolling hints exposed for operators (`/status`, Prometheus).
+3. **Reliability orchestration** — Per-backend timeouts, configurable fallback chains, overload reject/degrade, health-aware routing.
+4. **Multi-tenant policy** — Tenant classes, priorities, per-request budget estimates, per-tenant RPS windows (in-memory per replica).
+5. **Scaling signals** — Queue depth, timeout-spike hints, TTFT degradation ratio, recent fallback rate, optional `max_concurrency` hints from config — intended for HPA/KEDA or custom autoscalers (**per-replica** unless you add shared state).
+
+### Related products
+
+- **InferCore** — runs the **decision layer** (how requests are routed, protected, and metered).
+- **MicroWatch** (if you use it in your stack) — oriented toward **deep observability and analysis** (what happened, why, cost/SLO health). One-line split: *InferCore runs the plane; MicroWatch explains the run.*
 
 ## Repository layout
 
 This repository includes:
 
-- One-page architecture document
 - In-scope/out-of-scope document (`docs/scope.md`)
 - YAML configuration draft
 - OpenAPI draft for key endpoints
@@ -188,7 +266,7 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 
 ## Documents
 
-- Architecture: `docs/architecture-one-pager.md`
+- Architecture (full one-pager copy for print/PDF): `docs/architecture-one-pager.md`
 - Scope: `docs/scope.md`
 - Config example: `configs/infercore.example.yaml`
 - Observability: `docs/observability.md`
