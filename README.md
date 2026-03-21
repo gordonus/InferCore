@@ -108,25 +108,29 @@ Parallel outputs:
 This repository includes:
 
 - YAML configuration examples and OpenAPI draft (`api/openapi.yaml`)
-- Go implementation of the control plane (policy, routing, reliability, RAG retrieval, adapters)
-- Documentation under `docs/` (architecture one-pager, observability, load testing, streaming)
+- Go implementation of the control plane (policy, routing, reliability, RAG retrieval, adapters); infer pipeline orchestration in [`internal/inferexec`](internal/inferexec/)
+- Documentation under `docs/` (architecture, observability, load testing, streaming, retrieval adapters, offline tooling, KB registry roadmap)
 
 ## v1.0.0: AI Request model, ledger, RAG, CLI
 
 - **AI Request** — Optional fields on `POST /infer`: `request_type` (`inference` \| `rag` \| `agent`), `pipeline_ref` (defaults: `inference/basic:v1`, `rag/basic:v1`, `agent/basic:v0`), and `context` (RAG: `query`, `knowledge_base`; agent: tool hints for policy).
 - **Request ledger** — Enable with `ledger.enabled` and `driver: memory`, `sqlite` (`path`), or `postgres` (`dsn`). Persists full normalized `AIRequest` as `ai_request_json` (plus `input`/`context` JSON), `policy_snapshot` after routing, and per-step records for audit and replay.
-- **RAG (supported)** — Set `request_type: rag` and define `knowledge_bases` with `type: file` and a directory path (see `examples/kb`). Execution order: policy → overload admission → route → **retrieve** → **rerank** (`rag.rerank.type`, default `noop`) → chat completion on the selected backend. Provide user text via `input.text` and/or `context.query`; retrieved passages are merged into `input.retrieved_context` for the downstream model.
-- **Agent (preview)** — Tenant limits (`max_steps`, `max_tool_calls`, `allowed_tools`, …) are enforced in policy when `features.agent_enabled` is true; execution returns **501** `agent_not_implemented` until a tool loop ships.
+- **RAG (supported)** — Set `request_type: rag` and list `knowledge_bases` with `type: file` (local demo), **`http`** (JSON microservice), **`opensearch`** / **`elasticsearch`**, or **`meilisearch`**. See [`docs/retrieval-adapters.md`](docs/retrieval-adapters.md). Execution order: policy → overload admission → route → **retrieve** → **rerank** (`rag.rerank.type`, default `noop`) → chat completion. User text via `input.text` and/or `context.query`; chunks merge into `input.retrieved_context`.
+- **Agent (request model only; no runtime)** — `request_type: agent` is accepted for **agent-ready** ingress and policy (tenant limits such as `max_steps`, `max_tool_calls`, `allowed_tools` when `features.agent_enabled` is true). There is **no** tool loop or agent executor in this release: the gateway returns **501** `agent_not_implemented`. Do not describe InferCore as a full “agent platform” yet.
 - **CLI** (same binary):
 
 ```bash
 infercore serve                    # HTTP gateway (default when no subcommand)
 infercore trace <request_id>       # dump ledger request + steps JSON
-infercore replay <request_id> --mode exact|current
+infercore replay <request_id> --mode exact|current   # single response JSON
+infercore replay id1 id2 --mode current              # batch: NDJSON lines (or --ids-file)
+infercore ledger export-eval <request_id>... -o items.json   # eval dataset from ai_request_json
 infercore eval run --dataset examples/queries.json --pipeline inference/basic:v1
 # With server API key auth (or env INFERCORE_API_KEY):
 infercore eval run --dataset examples/queries.json --api-key "$INFERCORE_API_KEY"
 ```
+
+Replay and ledger commands use the **CLI** and [`internal/replay`](internal/replay/replay.go); the HTTP gateway does not expose a replay API (see [`docs/offline-tooling.md`](docs/offline-tooling.md)).
 
 ### Replay semantics (`infercore replay`)
 
@@ -307,7 +311,7 @@ High-level summary of what the running service does today. For streaming details
 ### RAG
 
 - **When:** `request_type: rag` on `POST /infer`.
-- **Config:** `knowledge_bases[]` with `type: file` and `path` to a directory of text/markdown; optional `context.knowledge_base` selects the KB by name (otherwise the first listed KB is used). Set `rag.rerank.type` (v1.5: `noop` or future rerankers).
+- **Config:** `knowledge_bases[]` — `type` is one of **`file`** (`path`), **`http`** (`endpoint` POST URL), **`opensearch`** / **`elasticsearch`** (`endpoint` + `index`), **`meilisearch`** (`endpoint` + `index` + `api_key`). Optional: `api_key`, `headers`, `top_k`, `search_fields` (OpenSearch), `http_timeout_ms`. Optional `context.knowledge_base` selects the KB by name (otherwise the first listed KB). Set `rag.rerank.type` (v1.5: `noop` or future rerankers). Full contracts: [`docs/retrieval-adapters.md`](docs/retrieval-adapters.md).
 - **Pipeline:** after routing, ledger steps **retrieve** and **rerank** run inside the same **`server.request_timeout_ms`** budget as the backend call. Retrieved chunks are merged into `input` (including `retrieved_context`) before the chat adapter runs.
 - **Errors:** `400` `rag_not_configured` if KBs are missing or misconfigured; `400` `invalid_request` if the query text is empty (`input.text` / `context.query`). Retrieval/rerank failures surface as `502` `execution_failed` with the upstream error message.
 - **Replay:** `infercore replay --mode exact` re-runs retrieve + rerank; changing KB files on disk can change results versus the original online call (see **Replay semantics** under v1.5 above).
@@ -357,12 +361,13 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 
 ## Project Structure
 
-- `cmd/infercore`: service entrypoint
-- `internal/server`: HTTP handlers and routing
+- `cmd/infercore`: service entrypoint and CLI (`trace`, `replay`, `ledger`, `eval`)
+- `internal/server`: HTTP handlers (~1k-line `server.go` plus helpers); thin `infer` delegates to `internal/inferexec`
+- `internal/inferexec`: infer execution pipeline (policy → route → RAG → backend) and phase plan helpers
 - `internal/interfaces`: core module contracts
 - `internal/types`: shared core data structures
 - `configs`: YAML configuration examples
-- `docs`: architecture and scope docs
+- `docs`: architecture, observability, retrieval adapters, offline tooling, KB roadmap
 - `api`: OpenAPI contract draft
 
 ## Load testing
@@ -379,6 +384,9 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 - Observability: [`docs/observability.md`](docs/observability.md)
 - Load testing: [`docs/load-testing.md`](docs/load-testing.md)
 - Streaming & fallback: [`docs/streaming-and-fallback.md`](docs/streaming-and-fallback.md)
+- Retrieval adapters (RAG): [`docs/retrieval-adapters.md`](docs/retrieval-adapters.md)
+- Offline tooling (CLI vs HTTP gaps): [`docs/offline-tooling.md`](docs/offline-tooling.md)
+- Extending retrieval adapters (developer guide): [`docs/extending-retrieval-adapters.md`](docs/extending-retrieval-adapters.md)
 - API draft: [`api/openapi.yaml`](api/openapi.yaml)
 
 ## License

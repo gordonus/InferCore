@@ -168,11 +168,28 @@ features:
   # When false, agent requests are rejected at policy. When true, policy tenant limits apply but execution returns 501 until implemented.
   agent_enabled: false
 
-# File-backed knowledge bases for RAG — set request_type: rag on POST /infer (see README + api/openapi.yaml).
+# Knowledge bases for RAG — set request_type: rag on POST /infer (see docs/retrieval-adapters.md).
 knowledge_bases:
   - name: demo
     type: file
     path: examples/kb
+  # Examples (uncomment and point at your services):
+  # - name: remote-rag
+  #   type: http
+  #   endpoint: http://127.0.0.1:9090/v1/retrieve
+  #   api_key: ""  # optional Bearer; or use headers: { Authorization: "Bearer ..." }
+  #   top_k: 8
+  # - name: os-docs
+  #   type: opensearch
+  #   endpoint: https://search.example.com
+  #   index: docs-v1
+  #   search_fields: [title, content, body]
+  #   headers: { Authorization: "Basic ..." }
+  # - name: meili-docs
+  #   type: meilisearch
+  #   endpoint: http://127.0.0.1:7700
+  #   index: docs
+  #   api_key: masterKey
 
 # RAG rerank stage after retrieval (v1.5: noop only; future: cross-encoder / remote rerank).
 rag:

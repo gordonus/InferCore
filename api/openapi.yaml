@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: >
     InferCore HTTP API (OpenAPI draft). POST /infer is the single ingress for plain inference,
-    RAG (retrieval + rerank + model call when request_type=rag), and agent preview traffic.
+    RAG (retrieval + rerank + model call when request_type=rag), and agent-ingress preview (no agent runtime).
 servers:
   - url: http://localhost:8080
 paths:
@@ -13,7 +13,7 @@ paths:
       summary: Run an AI request through InferCore (inference, RAG, or agent preview)
       description: >
         Unified AI ingress. Use request_type=inference (default), rag (requires knowledge_bases in server config),
-        or agent (preview). RAG requests run retrieve and rerank after routing, then call the selected backend.
+        or agent (ingress only: returns 501 agent_not_implemented; no tool loop). RAG requests run retrieve and rerank after routing, then call the selected backend.
       requestBody:
         required: true
         content:
@@ -40,7 +40,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '501':
-          description: Agent execution not implemented (preview)
+          description: >
+            Agent request accepted on the wire but no agent runtime is shipped yet (agent_not_implemented).
+            Not a full agent platform—only an agent-ready request model and policy hooks.
           content:
             application/json:
               schema:
@@ -127,6 +129,7 @@ components:
         request_type:
           type: string
           enum: [inference, rag, agent]
+          description: inference (default), rag, or agent (agent returns 501 until a runtime exists)
         pipeline_ref:
           type: string
           example: inference/basic:v1

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,6 +45,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(serveCmd(&cfgPath))
 	root.AddCommand(traceCmd(&cfgPath))
 	root.AddCommand(replayCmd(&cfgPath))
+	root.AddCommand(ledgerCmd(&cfgPath))
 	root.AddCommand(evalCmd())
 	return root
 }
@@ -171,12 +173,36 @@ func stepsToJSON(steps []requests.StepRow) []map[string]any {
 }
 
 func replayCmd(cfgPath *string) *cobra.Command {
-	var mode string
+	var mode, idsFile string
 	cmd := &cobra.Command{
-		Use:   "replay [request_id]",
-		Short: "Replay a ledger request (exact or current policy/route)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "replay [request_id ...]",
+		Short: "Replay ledger request(s) via internal/replay (no HTTP API on gateway)",
+		Long:  "With one request_id and no --ids-file, prints a single indented AIResponse JSON. With multiple IDs or --ids-file, prints one JSON object per line (NDJSON) with request_id, response or error.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var ids []string
+			if strings.TrimSpace(idsFile) != "" {
+				f, err := os.Open(idsFile)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				sc := bufio.NewScanner(f)
+				for sc.Scan() {
+					line := strings.TrimSpace(sc.Text())
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					ids = append(ids, line)
+				}
+				if err := sc.Err(); err != nil {
+					return err
+				}
+			}
+			ids = append(ids, args...)
+			if len(ids) == 0 {
+				return fmt.Errorf("provide at least one request_id or use --ids-file")
+			}
+
 			cfg, err := config.Load(*cfgPath)
 			if err != nil {
 				return err
@@ -197,18 +223,124 @@ func replayCmd(cfgPath *string) *cobra.Command {
 			if m != replay.ModeExact && m != replay.ModeCurrent {
 				return fmt.Errorf("mode must be exact or current")
 			}
-			ctx := context.Background()
-			resp, err := replay.Replay(ctx, cfg, st, args[0], m, deps)
-			if err != nil {
-				return err
+			ctx := cmd.Context()
+			if len(ids) == 1 && idsFile == "" {
+				resp, err := replay.Replay(ctx, cfg, st, ids[0], m, deps)
+				if err != nil {
+					return err
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(resp)
 			}
+
 			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(resp)
+			for _, id := range ids {
+				resp, rerr := replay.Replay(ctx, cfg, st, id, m, deps)
+				row := map[string]any{"request_id": id}
+				if rerr != nil {
+					row["error"] = rerr.Error()
+				} else {
+					row["response"] = resp
+				}
+				if err := enc.Encode(row); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&mode, "mode", "exact", "exact|current")
+	cmd.Flags().StringVar(&idsFile, "ids-file", "", "one request_id per line (merged with positional IDs)")
 	return cmd
+}
+
+func ledgerCmd(cfgPath *string) *cobra.Command {
+	var idsFile, output string
+	exportEval := &cobra.Command{
+		Use:   "export-eval [request_id ...]",
+		Short: "Build eval dataset JSON from ledger rows (uses ai_request_json)",
+		Long:  "Loads each request_id from the configured ledger and writes a JSON array suitable for `infercore eval run --dataset`. Rows with selected_backend set include expected_backend for routing regression.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(*cfgPath)
+			if err != nil {
+				return err
+			}
+			st, err := requests.NewFromConfig(cfg)
+			if err != nil {
+				return err
+			}
+			if st == nil {
+				return fmt.Errorf("ledger is disabled; set ledger.enabled=true in config")
+			}
+			defer st.Close()
+
+			var ids []string
+			if strings.TrimSpace(idsFile) != "" {
+				f, err := os.Open(idsFile)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				sc := bufio.NewScanner(f)
+				for sc.Scan() {
+					line := strings.TrimSpace(sc.Text())
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					ids = append(ids, line)
+				}
+				if err := sc.Err(); err != nil {
+					return err
+				}
+			}
+			ids = append(ids, args...)
+			if len(ids) == 0 {
+				return fmt.Errorf("provide request_id arguments or --ids-file with one id per line")
+			}
+
+			ctx := context.Background()
+			var items []eval.Item
+			var convErrs []error
+			for _, id := range ids {
+				row, err := st.GetRequest(ctx, id)
+				if err != nil {
+					convErrs = append(convErrs, fmt.Errorf("%s: %w", id, err))
+					continue
+				}
+				it, err := eval.ItemFromRequestRow(row)
+				if err != nil {
+					convErrs = append(convErrs, err)
+					continue
+				}
+				items = append(items, it)
+			}
+			for _, e := range convErrs {
+				_, _ = fmt.Fprintf(os.Stderr, "warn: %v\n", e)
+			}
+			if len(items) == 0 {
+				return fmt.Errorf("no eval items exported (%d conversion/load errors)", len(convErrs))
+			}
+
+			var out *os.File = os.Stdout
+			if strings.TrimSpace(output) != "" {
+				out, err = os.Create(output)
+				if err != nil {
+					return err
+				}
+				defer out.Close()
+			}
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode(items)
+		},
+	}
+	exportEval.Flags().StringVar(&idsFile, "ids-file", "", "file with one request_id per line (# comments and blank lines ignored)")
+	exportEval.Flags().StringVarP(&output, "output", "o", "", "write JSON to this path (default: stdout)")
+
+	root := &cobra.Command{Use: "ledger", Short: "Ledger utilities (export, etc.)"}
+	root.AddCommand(exportEval)
+	return root
 }
 
 func buildAdapterMap(cfg *config.Config) map[string]interfaces.BackendAdapter {

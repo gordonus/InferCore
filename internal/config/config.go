@@ -47,11 +47,27 @@ type LedgerConfig struct {
 	DSN     string `yaml:"dsn"`    // postgres connection string when driver=postgres
 }
 
-// KnowledgeBaseConfig backs retrieval adapters (e.g. file-backed demo KB for RAG).
+// KnowledgeBaseConfig backs retrieval adapters for RAG.
+// Types: file (local text), http (generic JSON POST), opensearch|elasticsearch (BM25/multi_match), meilisearch.
 type KnowledgeBaseConfig struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // file
-	Path string `yaml:"path"`
+	Type string `yaml:"type"`
+	Path string `yaml:"path"` // file: directory root
+
+	// HTTP retrieval service (type=http): POST JSON {"query","top_k"}; expects {"chunks":[{"text","source","score"}]}.
+	Endpoint string            `yaml:"endpoint"`
+	APIKey   string            `yaml:"api_key"`
+	Headers  map[string]string `yaml:"headers"`
+	TopK     int               `yaml:"top_k"` // 0 = default per adapter
+
+	// OpenSearch / Elasticsearch (type=opensearch|elasticsearch): POST {endpoint}/{index}/_search
+	Index        string   `yaml:"index"`
+	SearchFields []string `yaml:"search_fields"` // default: text, content, body
+
+	// Meilisearch (type=meilisearch): GET {endpoint}/indexes/{index}/search?q=...
+	// Uses index + endpoint + api_key (Bearer).
+
+	HTTPTimeoutMS int `yaml:"http_timeout_ms"` // http|opensearch|meilisearch outbound; 0 = 30s
 }
 
 // PipelinesFileConfig optional path to extra pipeline definitions (future); built-ins always exist.
@@ -375,11 +391,34 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config validation: knowledge_bases entry name cannot be empty")
 		}
 		typ := strings.ToLower(strings.TrimSpace(kb.Type))
-		if typ != "file" {
-			return fmt.Errorf("config validation: knowledge base %q unsupported type %q (only file)", kb.Name, kb.Type)
-		}
-		if strings.TrimSpace(kb.Path) == "" {
-			return fmt.Errorf("config validation: knowledge base %q requires path", kb.Name)
+		switch typ {
+		case "file":
+			if strings.TrimSpace(kb.Path) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type file requires path", kb.Name)
+			}
+		case "http":
+			if strings.TrimSpace(kb.Endpoint) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type http requires endpoint", kb.Name)
+			}
+		case "opensearch", "elasticsearch":
+			if strings.TrimSpace(kb.Endpoint) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type %s requires endpoint", kb.Name, typ)
+			}
+			if strings.TrimSpace(kb.Index) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type %s requires index", kb.Name, typ)
+			}
+		case "meilisearch":
+			if strings.TrimSpace(kb.Endpoint) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type meilisearch requires endpoint", kb.Name)
+			}
+			if strings.TrimSpace(kb.Index) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type meilisearch requires index", kb.Name)
+			}
+			if strings.TrimSpace(kb.APIKey) == "" {
+				return fmt.Errorf("config validation: knowledge base %q type meilisearch requires api_key", kb.Name)
+			}
+		default:
+			return fmt.Errorf("config validation: knowledge base %q unsupported type %q (file|http|opensearch|elasticsearch|meilisearch)", kb.Name, kb.Type)
 		}
 	}
 
