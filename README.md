@@ -180,6 +180,8 @@ Use a custom config file:
 INFERCORE_CONFIG=./configs/infercore.example.yaml go run ./cmd/infercore
 ```
 
+**Secrets in YAML:** placeholders like `${OPENAI_API_KEY}` are expanded at load time from the **process environment** (`os.Getenv`). Export the variable before starting, or prefix the command: `OPENAI_API_KEY=sk-... infercore serve --config=...`. Unset variables become empty strings. Only `${VAR}` is supported (ASCII identifier after `VAR`).
+
 ### Make targets
 
 ```bash
@@ -203,8 +205,11 @@ Mount your own config:
 docker run --rm -p 8080:8080 \
   -v "$(pwd)/configs/my.yaml:/app/config.yaml:ro" \
   -e INFERCORE_CONFIG=/app/config.yaml \
+  -e OPENAI_API_KEY=... \
   infercore:local
 ```
+
+(If the YAML uses `${OPENAI_API_KEY}`, pass it with `-e` so expansion works inside the container. Otherwise, skip `-e OPENAI_API_KEY=... ` )
 
 ### CI
 

@@ -441,6 +441,38 @@ reliability:
 	}
 }
 
+func TestLoad_ExpandsEnvVarsInYAML(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-from-env")
+	cfgPath := writeTempConfig(t, `
+server:
+  port: 8080
+backends:
+  - name: oa
+    type: openai_compatible
+    endpoint: https://api.example.com
+    timeout_ms: 100
+    api_key: ${OPENAI_API_KEY}
+    health_path: /v1/models
+    default_model: gpt-4o-mini
+    cost: { unit: 1, currency: credit }
+    capabilities: [chat]
+tenants:
+  - id: t1
+routing:
+  default_backend: oa
+reliability:
+  fallback_enabled: false
+`)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("expected config to load: %v", err)
+	}
+	if cfg.Backends[0].APIKey != "sk-from-env" {
+		t.Fatalf("api_key after expand: %q", cfg.Backends[0].APIKey)
+	}
+}
+
 func TestLoad_ServerHTTPTimeoutsNegative(t *testing.T) {
 	cfgPath := writeTempConfig(t, `
 server:
