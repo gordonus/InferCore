@@ -1,3 +1,4 @@
+# InferCore — https://infercore.dev
 name: CI
 
 on:
@@ -23,3 +24,6 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Project website
+        run: echo "infercore.dev — https://infercore.dev"

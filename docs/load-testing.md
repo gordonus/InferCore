@@ -128,3 +128,8 @@ Another process is bound to that port (often a previous InferCore). Free the por
 ## Multi-instance note
 
 RPS limits and overload counters are **per process**. To test cluster behavior, run N replicas behind a load balancer and aggregate metrics in Prometheus.
+
+## See also
+
+- **Website:** [infercore.dev](https://infercore.dev) — product overview and blog
+- [README.md](../README.md) — project index

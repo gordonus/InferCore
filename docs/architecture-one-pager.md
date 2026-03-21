@@ -10,6 +10,8 @@ It provides intelligent routing, cost-aware decisions, fallback and degrade orch
 
 **InferCore is not a model server.** It does not run token generation and does not replace vLLM, Triton, Ray Serve, or KServe.
 
+**Website:** [infercore.dev](https://infercore.dev)
+
 ## Design goals
 
 InferCore fills the missing **system decision layer** in typical serving stacks:
@@ -97,7 +99,7 @@ The service exposes `scaling_signals` on `GET /status` and matching `infercore_s
 
 ## Further reading
 
+- [infercore.dev](https://infercore.dev) — official website (overview, blog)
 - [README.md](../README.md) — full project quickstart, runtime behavior, and document index
-- [scope.md](./scope.md) — in-scope / out-of-scope
 - [observability.md](./observability.md) — metrics, status, timeouts
 - [LICENSE](../LICENSE) — Apache License 2.0

@@ -39,6 +39,9 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "infercore",
 		Short: "InferCore AI request control plane",
+		Long: `InferCore is an open-source AI inference control plane (routing, policy, RAG orchestration, reliability).
+
+Project website: https://infercore.dev`,
 	}
 	root.PersistentFlags().StringVar(&cfgPath, "config", envOr("INFERCORE_CONFIG", "configs/infercore.example.yaml"), "path to YAML config")
 

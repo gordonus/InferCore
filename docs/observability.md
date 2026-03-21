@@ -130,3 +130,8 @@ Current fallback trigger values accepted by config:
 - `upstream_4xx`
 - `upstream_5xx`
 - `backend_error`
+
+## See also
+
+- **Website:** [infercore.dev](https://infercore.dev) — product overview and blog
+- [README.md](../README.md) — project index

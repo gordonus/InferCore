@@ -1,4 +1,5 @@
-.PHONY: help all fmt vet test build run smoke docker-build clean
+# InferCore — https://infercore.dev
+.PHONY: help all fmt vet test build run smoke docker-build clean info
 
 BIN_DIR := bin
 BINARY := $(BIN_DIR)/infercore
@@ -6,6 +7,9 @@ CONFIG ?= configs/infercore.example.yaml
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
+
+info: ## Print project website URL
+	@echo "Website: https://infercore.dev"
 
 all: fmt vet test ## Format, vet, and test
 

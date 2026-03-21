@@ -2,6 +2,9 @@ openapi: 3.0.3
 info:
   title: InferCore API
   version: 0.1.0
+  contact:
+    name: InferCore
+    url: https://infercore.dev
   description: >
     InferCore HTTP API (OpenAPI draft). POST /infer is the single ingress for plain inference,
     RAG (retrieval + rerank + model call when request_type=rag), and agent-ingress preview (no agent runtime).

@@ -43,3 +43,8 @@ Text-in retrieval against Pinecone (and similar) usually requires an **embedding
 ## Implementing a new adapter
 
 See [`extending-retrieval-adapters.md`](./extending-retrieval-adapters.md) for wiring (`FromConfig`, config validation, tests) and conventions.
+
+## See also
+
+- **Website:** [infercore.dev](https://infercore.dev) — product overview and blog
+- [README.md](../README.md) — project index

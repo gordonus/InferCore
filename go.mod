@@ -1,5 +1,7 @@
 module github.com/infercore/infercore
 
+// Project website: https://infercore.dev
+
 go 1.25.0
 
 require (

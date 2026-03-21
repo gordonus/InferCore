@@ -22,3 +22,8 @@ Primary failures that match configured fallback triggers still use the reliabili
 ## RAG and streaming
 
 For `request_type: rag`, **retrieve** and **rerank** run **before** the chat completion call. They are non-streaming steps; only the final model invocation honors `options.stream` and the streaming behavior described above. The gateway timeout (`server.request_timeout_ms`) applies to the whole chain (policy + route + retrieve + rerank + backend).
+
+## See also
+
+- **Website:** [infercore.dev](https://infercore.dev) — product overview and blog
+- [README.md](../README.md) — project index

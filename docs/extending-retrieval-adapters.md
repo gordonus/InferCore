@@ -80,3 +80,8 @@ The following were sketched for a future **registry / versioned retrieval** laye
 - Ledger fields capturing retrieval policy snapshot for `replay --mode exact`.
 
 Keep the adapter interface stable; prefer optional structs or extended `opts` keys when those features land.
+
+## See also
+
+- **Website:** [infercore.dev](https://infercore.dev) — product overview and blog
+- [README.md](../README.md) — project index

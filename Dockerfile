@@ -12,6 +12,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/inferco
 
 # Runtime
 FROM alpine:3.20
+LABEL org.opencontainers.image.url="https://infercore.dev" \
+	org.opencontainers.image.source="https://github.com/infercore/infercore"
 RUN apk add --no-cache ca-certificates \
 	&& adduser -D -H -u 10001 appuser
 

@@ -9,5 +9,6 @@ This directory can be referenced from InferCore config as a **file-backed** know
 
 ## Related docs
 
+- Website: [infercore.dev](https://infercore.dev)
 - Main guide: [`README.md`](../../README.md) (v1.5 section, **RAG** under *Current runtime behavior*).
 - OpenAPI: [`api/openapi.yaml`](../../api/openapi.yaml).
