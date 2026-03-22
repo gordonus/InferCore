@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/infercore/infercore/internal/adapters/anthropic"
 	"github.com/infercore/infercore/internal/adapters/gemini"
 	"github.com/infercore/infercore/internal/adapters/mock"
 	"github.com/infercore/infercore/internal/adapters/vllm"
@@ -53,6 +54,117 @@ func TestAdapterConformance_VLLM(t *testing.T) {
 		TimeoutMS:    200,
 		Capabilities: []string{"chat"},
 		Cost:         config.CostConfig{Unit: 2},
+	})
+	assertAdapterConformance(t, adapter)
+}
+
+func TestAdapterConformance_Anthropic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "hello from anthropic"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := anthropic.New(config.BackendConfig{
+		Name:         "anthropic-b",
+		Type:         "anthropic",
+		Endpoint:     srv.URL,
+		TimeoutMS:    200,
+		APIKey:       "test-key",
+		DefaultModel: "claude-3-5-sonnet-20241022",
+		Capabilities: []string{"chat"},
+		Cost:         config.CostConfig{Unit: 2},
+	})
+	assertAdapterConformance(t, adapter)
+}
+
+func TestAdapterConformance_AzureOpenAI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("api-key") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/models":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/openai/deployments/my-dep/chat/completions"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"content": "hello from azure"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := vllm.New(config.BackendConfig{
+		Name:           "azure-b",
+		Type:           "azure_openai",
+		Endpoint:       srv.URL,
+		TimeoutMS:      200,
+		APIKey:         "test-key",
+		DefaultModel:   "my-dep",
+		Capabilities:   []string{"chat"},
+		Cost:           config.CostConfig{Unit: 2},
+	})
+	assertAdapterConformance(t, adapter)
+}
+
+func TestAdapterConformance_GeminiVertex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/projects/p1/locations/us-central1":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, ":generateContent"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"candidates": []map[string]any{
+					{
+						"content": map[string]any{
+							"parts": []map[string]any{{"text": "hello from vertex"}},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	adapter := gemini.New(config.BackendConfig{
+		Name:           "vertex-b",
+		Type:           "gemini_vertex",
+		Endpoint:       srv.URL,
+		TimeoutMS:      200,
+		APIKey:         "test-token",
+		VertexProject:  "p1",
+		VertexLocation: "us-central1",
+		DefaultModel:   "gemini-2.0-flash",
+		Capabilities:   []string{"chat"},
+		Cost:           config.CostConfig{Unit: 2},
 	})
 	assertAdapterConformance(t, adapter)
 }

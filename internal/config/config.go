@@ -129,6 +129,13 @@ type BackendConfig struct {
 	HealthPath     string            `yaml:"health_path"`
 	DefaultModel   string            `yaml:"default_model"`
 	Headers        map[string]string `yaml:"headers"`
+	// APIVersion is used by azure_openai (api-version query parameter on chat completions and health).
+	APIVersion string `yaml:"api_version"`
+	// AWSRegion is used by bedrock (model invocation via AWS SDK default credential chain).
+	AWSRegion string `yaml:"aws_region"`
+	// VertexProject and VertexLocation enable Vertex AI Gemini URLs (type gemini_vertex).
+	VertexProject  string `yaml:"vertex_project"`
+	VertexLocation string `yaml:"vertex_location"`
 }
 
 type TenantConfig struct {
@@ -289,9 +296,26 @@ func (c *Config) validate() error {
 		}
 		switch b.Type {
 		case "mock":
-		case "vllm", "openai", "openai_compatible":
+		case "vllm", "openai", "openai_compatible", "azure_openai":
 			if strings.TrimSpace(b.Endpoint) == "" {
 				return fmt.Errorf("config validation: backend %q type %q requires endpoint", b.Name, b.Type)
+			}
+			if b.Type == "azure_openai" && strings.TrimSpace(b.DefaultModel) == "" {
+				return fmt.Errorf("config validation: backend %q type azure_openai requires default_model (Azure deployment name)", b.Name)
+			}
+		case "anthropic":
+			if strings.TrimSpace(b.APIKey) == "" {
+				return fmt.Errorf("config validation: backend %q type anthropic requires api_key", b.Name)
+			}
+			if strings.TrimSpace(b.DefaultModel) == "" {
+				return fmt.Errorf("config validation: backend %q type anthropic requires default_model", b.Name)
+			}
+		case "bedrock":
+			if strings.TrimSpace(b.AWSRegion) == "" {
+				return fmt.Errorf("config validation: backend %q type bedrock requires aws_region", b.Name)
+			}
+			if strings.TrimSpace(b.DefaultModel) == "" {
+				return fmt.Errorf("config validation: backend %q type bedrock requires default_model (Bedrock model ID)", b.Name)
 			}
 		case "gemini":
 			// endpoint optional; empty uses https://generativelanguage.googleapis.com in adapter
@@ -300,6 +324,16 @@ func (c *Config) validate() error {
 			}
 			if strings.TrimSpace(b.DefaultModel) == "" {
 				return fmt.Errorf("config validation: backend %q type gemini requires default_model", b.Name)
+			}
+		case "gemini_vertex":
+			if strings.TrimSpace(b.VertexProject) == "" || strings.TrimSpace(b.VertexLocation) == "" {
+				return fmt.Errorf("config validation: backend %q type gemini_vertex requires vertex_project and vertex_location", b.Name)
+			}
+			if strings.TrimSpace(b.APIKey) == "" {
+				return fmt.Errorf("config validation: backend %q type gemini_vertex requires api_key (OAuth access token or compatible bearer)", b.Name)
+			}
+			if strings.TrimSpace(b.DefaultModel) == "" {
+				return fmt.Errorf("config validation: backend %q type gemini_vertex requires default_model", b.Name)
 			}
 		default:
 			return fmt.Errorf("config validation: unsupported backend type %q for backend %q", b.Type, b.Name)

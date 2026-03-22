@@ -389,6 +389,7 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 - License: [`LICENSE`](LICENSE) (Apache-2.0)
 - Architecture (one-pager for print/PDF): [`docs/architecture-one-pager.md`](docs/architecture-one-pager.md)
 - Config example: [`configs/infercore.example.yaml`](configs/infercore.example.yaml)
+- Backend adapters: [`docs/backend-adapters.md`](docs/backend-adapters.md)
 - Observability: [`docs/observability.md`](docs/observability.md)
 - Load testing: [`docs/load-testing.md`](docs/load-testing.md)
 - Streaming & fallback: [`docs/streaming-and-fallback.md`](docs/streaming-and-fallback.md)

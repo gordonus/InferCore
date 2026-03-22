@@ -1,6 +1,8 @@
 package adapters
 
 import (
+	"github.com/infercore/infercore/internal/adapters/anthropic"
+	"github.com/infercore/infercore/internal/adapters/bedrock"
 	"github.com/infercore/infercore/internal/adapters/gemini"
 	"github.com/infercore/infercore/internal/adapters/mock"
 	"github.com/infercore/infercore/internal/adapters/vllm"
@@ -13,9 +15,13 @@ func NewBackend(backend config.BackendConfig) (interfaces.BackendAdapter, bool) 
 	switch backend.Type {
 	case "mock":
 		return mock.New(backend), true
-	case "vllm", "openai", "openai_compatible":
+	case "vllm", "openai", "openai_compatible", "azure_openai":
 		return vllm.New(backend), true
-	case "gemini":
+	case "anthropic":
+		return anthropic.New(backend), true
+	case "bedrock":
+		return bedrock.New(backend), true
+	case "gemini", "gemini_vertex":
 		return gemini.New(backend), true
 	default:
 		return nil, false

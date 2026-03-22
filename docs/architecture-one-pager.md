@@ -101,5 +101,6 @@ The service exposes `scaling_signals` on `GET /status` and matching `infercore_s
 
 - [infercore.dev](https://infercore.dev) — official website (overview, blog)
 - [README.md](../README.md) — full project quickstart, runtime behavior, and document index
+- [backend-adapters.md](./backend-adapters.md) — backend types and configuration
 - [observability.md](./observability.md) — metrics, status, timeouts
 - [LICENSE](../LICENSE) — Apache License 2.0

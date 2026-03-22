@@ -53,6 +53,7 @@ type Adapter struct {
 	cfg        config.BackendConfig
 	baseURL    string
 	httpClient *http.Client
+	vertex     bool // Vertex AI Gemini (Bearer token + regional aiplatform host)
 }
 
 func New(cfg config.BackendConfig) *Adapter {
@@ -60,12 +61,22 @@ func New(cfg config.BackendConfig) *Adapter {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
+	vertex := cfg.Type == "gemini_vertex"
 	base := strings.TrimSpace(cfg.Endpoint)
 	if base == "" {
-		base = defaultGeminiEndpoint
+		if vertex {
+			loc := strings.TrimSpace(cfg.VertexLocation)
+			if loc == "" {
+				loc = "us-central1"
+			}
+			base = fmt.Sprintf("https://%s-aiplatform.googleapis.com", loc)
+		} else {
+			base = defaultGeminiEndpoint
+		}
 	}
 	return &Adapter{
 		cfg:     cfg,
+		vertex:  vertex,
 		baseURL: strings.TrimRight(base, "/"),
 		httpClient: &http.Client{
 			Timeout: timeout,
@@ -85,6 +96,18 @@ func (a *Adapter) modelID() string {
 
 func (a *Adapter) apiKey() string {
 	return strings.TrimSpace(a.cfg.APIKey)
+}
+
+// actionPath returns URL path for generateContent / streamGenerateContent (Vertex vs AI Studio).
+func (a *Adapter) actionPath(model, action string) string {
+	model = strings.TrimPrefix(model, "models/")
+	model = strings.TrimSpace(model)
+	if a.vertex {
+		proj := strings.TrimSpace(a.cfg.VertexProject)
+		loc := strings.TrimSpace(a.cfg.VertexLocation)
+		return fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/google/models/%s:%s", proj, loc, model, action)
+	}
+	return fmt.Sprintf("/v1beta/models/%s:%s", model, action)
 }
 
 func (a *Adapter) Invoke(ctx context.Context, req types.BackendRequest) (types.BackendResponse, error) {
@@ -120,7 +143,7 @@ func (a *Adapter) invokeNonStream(ctx context.Context, text, model string) (type
 	if err != nil {
 		return types.BackendResponse{}, err
 	}
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", a.baseURL, model)
+	url := a.baseURL + a.actionPath(model, "generateContent")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return types.BackendResponse{}, err
@@ -183,7 +206,7 @@ func (a *Adapter) invokeStream(ctx context.Context, text, model string) (types.B
 	if err != nil {
 		return types.BackendResponse{}, err
 	}
-	url := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse", a.baseURL, model)
+	url := a.baseURL + a.actionPath(model, "streamGenerateContent") + "?alt=sse"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return types.BackendResponse{}, err
@@ -321,7 +344,13 @@ func (a *Adapter) invokeStream(ctx context.Context, text, model string) (types.B
 func (a *Adapter) Health(ctx context.Context) error {
 	path := strings.TrimSpace(a.cfg.HealthPath)
 	if path == "" {
-		path = "/v1beta/models"
+		if a.vertex {
+			proj := strings.TrimSpace(a.cfg.VertexProject)
+			loc := strings.TrimSpace(a.cfg.VertexLocation)
+			path = fmt.Sprintf("/v1/projects/%s/locations/%s", proj, loc)
+		} else {
+			path = "/v1beta/models"
+		}
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -346,7 +375,11 @@ func (a *Adapter) Health(ctx context.Context) error {
 
 func (a *Adapter) applyAPIKey(req *http.Request) {
 	if k := a.apiKey(); k != "" {
-		req.Header.Set("x-goog-api-key", k)
+		if a.vertex {
+			req.Header.Set("Authorization", "Bearer "+k)
+		} else {
+			req.Header.Set("x-goog-api-key", k)
+		}
 	}
 }
 

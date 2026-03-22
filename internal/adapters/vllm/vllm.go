@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -76,8 +77,8 @@ func (a *Adapter) invokeNonStream(ctx context.Context, text, model string, strea
 		return types.BackendResponse{}, err
 	}
 
-	url := joinURL(a.cfg.Endpoint, "/v1/chat/completions")
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	chatURL := a.chatCompletionsURL()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(raw))
 	if err != nil {
 		return types.BackendResponse{}, err
 	}
@@ -153,8 +154,8 @@ func (a *Adapter) invokeStream(ctx context.Context, text, model string) (types.B
 	if err != nil {
 		return types.BackendResponse{}, err
 	}
-	url := joinURL(a.cfg.Endpoint, "/v1/chat/completions")
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	chatURL := a.chatCompletionsURL()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, bytes.NewReader(raw))
 	if err != nil {
 		return types.BackendResponse{}, err
 	}
@@ -313,6 +314,9 @@ func (a *Adapter) invokeStream(ctx context.Context, text, model string) (types.B
 }
 
 func (a *Adapter) Health(ctx context.Context) error {
+	if a.isAzure() {
+		return a.healthAzure(ctx)
+	}
 	path := strings.TrimSpace(a.cfg.HealthPath)
 	if path == "" {
 		path = "/health"
@@ -320,8 +324,8 @@ func (a *Adapter) Health(ctx context.Context) error {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	url := joinURL(a.cfg.Endpoint, path)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	u := joinURL(a.cfg.Endpoint, path)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
@@ -337,6 +341,61 @@ func (a *Adapter) Health(ctx context.Context) error {
 	return nil
 }
 
+func (a *Adapter) isAzure() bool {
+	return a.cfg.Type == "azure_openai"
+}
+
+func (a *Adapter) apiVersion() string {
+	v := strings.TrimSpace(a.cfg.APIVersion)
+	if v != "" {
+		return v
+	}
+	if a.isAzure() {
+		return "2024-02-15-preview"
+	}
+	return ""
+}
+
+func (a *Adapter) chatCompletionsURL() string {
+	if !a.isAzure() {
+		return joinURL(a.cfg.Endpoint, "/v1/chat/completions")
+	}
+	deployment := strings.TrimSpace(a.cfg.DefaultModel)
+	base := strings.TrimRight(a.cfg.Endpoint, "/")
+	u := fmt.Sprintf("%s/openai/deployments/%s/chat/completions", base, deployment)
+	if v := a.apiVersion(); v != "" {
+		u += "?api-version=" + url.QueryEscape(v)
+	}
+	return u
+}
+
+func (a *Adapter) healthAzure(ctx context.Context) error {
+	path := strings.TrimSpace(a.cfg.HealthPath)
+	if path == "" {
+		path = "/openai/models"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	base := strings.TrimRight(a.cfg.Endpoint, "/")
+	v := a.apiVersion()
+	u := base + path + "?api-version=" + url.QueryEscape(v)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	a.applyHeaders(httpReq)
+	resp, err := a.httpClient.Do(httpReq)
+	if err != nil {
+		return upstream.New(upstream.KindBackendUnhealthy, err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return upstream.New(upstream.KindBackendUnhealthy, fmt.Sprintf("azure health check failed status=%d path=%s", resp.StatusCode, path))
+	}
+	return nil
+}
+
 func (a *Adapter) applyHeaders(req *http.Request) {
 	for k, v := range a.cfg.Headers {
 		k = strings.TrimSpace(k)
@@ -347,6 +406,15 @@ func (a *Adapter) applyHeaders(req *http.Request) {
 	}
 	key := strings.TrimSpace(a.cfg.APIKey)
 	if key == "" {
+		return
+	}
+	if a.isAzure() {
+		name := strings.TrimSpace(a.cfg.AuthHeaderName)
+		if name == "" {
+			req.Header.Set("api-key", key)
+		} else {
+			req.Header.Set(name, key)
+		}
 		return
 	}
 	name := strings.TrimSpace(a.cfg.AuthHeaderName)
@@ -370,3 +438,4 @@ func (a *Adapter) Metadata() types.BackendMetadata {
 func joinURL(base, suffix string) string {
 	return strings.TrimRight(base, "/") + suffix
 }
+
