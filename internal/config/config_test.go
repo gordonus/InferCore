@@ -517,6 +517,78 @@ reliability:
 	}
 }
 
+func TestLoad_KnowledgeBaseFileMissingPath(t *testing.T) {
+	cfgPath := writeTempConfig(t, `
+backends:
+  - name: b1
+    type: mock
+    timeout_ms: 100
+    cost: { unit: 1, currency: credit }
+tenants:
+  - id: t1
+routing:
+  default_backend: b1
+reliability:
+  fallback_enabled: false
+knowledge_bases:
+  - name: kb1
+    type: file
+`)
+
+	_, err := Load(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), `knowledge base "kb1" type file requires path`) {
+		t.Fatalf("expected file KB path validation error, got: %v", err)
+	}
+}
+
+func TestLoad_KnowledgeBaseHTTPMissingEndpoint(t *testing.T) {
+	cfgPath := writeTempConfig(t, `
+backends:
+  - name: b1
+    type: mock
+    timeout_ms: 100
+    cost: { unit: 1, currency: credit }
+tenants:
+  - id: t1
+routing:
+  default_backend: b1
+reliability:
+  fallback_enabled: false
+knowledge_bases:
+  - name: kb1
+    type: http
+`)
+
+	_, err := Load(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), `knowledge base "kb1" type http requires endpoint`) {
+		t.Fatalf("expected http KB endpoint validation error, got: %v", err)
+	}
+}
+
+func TestLoad_KnowledgeBaseUnsupportedType(t *testing.T) {
+	cfgPath := writeTempConfig(t, `
+backends:
+  - name: b1
+    type: mock
+    timeout_ms: 100
+    cost: { unit: 1, currency: credit }
+tenants:
+  - id: t1
+routing:
+  default_backend: b1
+reliability:
+  fallback_enabled: false
+knowledge_bases:
+  - name: kb1
+    type: not-a-real-type
+`)
+
+	_, err := Load(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), `unsupported type`) {
+		t.Fatalf("expected unsupported knowledge base type error, got: %v", err)
+	}
+}
+
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

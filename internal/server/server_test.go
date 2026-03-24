@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -179,6 +181,251 @@ func TestInfer_OKWithInfercoreAPIKeyHeader(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d %s", resp.StatusCode, string(body))
 	}
+}
+
+func testConfigWithFileKB(t *testing.T) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "doc.txt")
+	content := "InferCore provides routing and fallback for AI requests.\n\nSecond chunk about observability."
+	if err := os.WriteFile(doc, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(100, true)
+	cfg.KnowledgeBases = []config.KnowledgeBaseConfig{
+		{Name: "kb1", Type: "file", Path: dir},
+	}
+	return cfg
+}
+
+func TestInfer_RAG_WithFileKB_Success200(t *testing.T) {
+	cfg := testConfigWithFileKB(t)
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"request_type": "rag",
+		"tenant_id":    "team-a",
+		"task_type":    "simple",
+		"priority":     "high",
+		"context": map[string]any{
+			"knowledge_base": "kb1",
+			"query":          "routing fallback infercore",
+		},
+		"input": map[string]any{
+			"text": "routing fallback infercore",
+		},
+		"options": map[string]any{"stream": false, "max_tokens": 128},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, string(body))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed["selected_backend"] != "small-model" {
+		t.Fatalf("backend=%v", parsed["selected_backend"])
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing result: %s", string(body))
+	}
+	text, _ := result["text"].(string)
+	if !strings.Contains(text, "[small-model]") {
+		t.Fatalf("expected mock prefix in result text, got %q", text)
+	}
+}
+
+func TestInfer_RAG_NoKnowledgeBasesConfigured400(t *testing.T) {
+	cfg := testConfig(100, true)
+	cfg.KnowledgeBases = nil
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"request_type": "rag",
+		"tenant_id":    "team-a",
+		"task_type":    "simple",
+		"priority":     "high",
+		"input": map[string]any{
+			"text": "hello",
+		},
+		"options": map[string]any{"stream": false, "max_tokens": 128},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", status, string(body))
+	}
+	assertStructuredError(t, body, errCodeRAGNotConfigured)
+}
+
+func TestInfer_RAG_UnknownKnowledgeBase400(t *testing.T) {
+	cfg := testConfigWithFileKB(t)
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"request_type": "rag",
+		"tenant_id":    "team-a",
+		"task_type":    "simple",
+		"priority":     "high",
+		"context": map[string]any{
+			"knowledge_base": "does-not-exist",
+			"query":          "hello",
+		},
+		"input":   map[string]any{"text": "hello"},
+		"options": map[string]any{"stream": false, "max_tokens": 128},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", status, string(body))
+	}
+	assertStructuredError(t, body, errCodeRAGNotConfigured)
+}
+
+func TestInfer_RAG_EmptyQuery400(t *testing.T) {
+	cfg := testConfigWithFileKB(t)
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"request_type": "rag",
+		"tenant_id":    "team-a",
+		"task_type":    "simple",
+		"priority":     "high",
+		"context": map[string]any{
+			"knowledge_base": "kb1",
+		},
+		"input":   map[string]any{"text": ""},
+		"options": map[string]any{"stream": false, "max_tokens": 128},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", status, string(body))
+	}
+	assertStructuredError(t, body, errCodeInvalidRequest)
+}
+
+func testConfigOpenAIEndpoint(t *testing.T, endpoint string) *config.Config {
+	t.Helper()
+	cfg := testConfig(100, true)
+	cfg.Backends[0].Type = "openai_compatible"
+	cfg.Backends[0].Endpoint = endpoint
+	return cfg
+}
+
+func TestInfer_StreamUpstreamJSON_DegradeFlagInResponse(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"content": "aggregated"}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+
+	cfg := testConfigOpenAIEndpoint(t, up.URL)
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"tenant_id": "team-a",
+		"task_type": "simple",
+		"priority":  "high",
+		"input":     map[string]any{"text": "hi"},
+		"options":   map[string]any{"stream": true, "max_tokens": 128},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, string(body))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	degrade, ok := parsed["degrade"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing degrade: %s", string(body))
+	}
+	if triggered, _ := degrade["triggered"].(bool); !triggered {
+		t.Fatalf("expected degrade.triggered=true for stream_degraded, got %+v", degrade)
+	}
+}
+
+func TestInfer_StreamUpstreamSSE_SuccessNoDegrade(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"X\"}}]}\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+
+	cfg := testConfigOpenAIEndpoint(t, up.URL)
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"tenant_id": "team-a",
+		"task_type": "simple",
+		"priority":  "high",
+		"input":     map[string]any{"text": "hi"},
+		"options":   map[string]any{"stream": true, "max_tokens": 128},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, string(body))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	degrade, ok := parsed["degrade"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing degrade: %s", string(body))
+	}
+	if triggered, _ := degrade["triggered"].(bool); triggered {
+		t.Fatalf("expected no degrade for SSE stream, got %+v", degrade)
+	}
+}
+
+func TestInfer_Agent_NotImplemented501(t *testing.T) {
+	cfg := testConfig(100, true)
+	cfg.Features.AgentEnabled = true
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	status, body := postInfer(t, ts.URL, map[string]any{
+		"request_type": "agent",
+		"tenant_id":    "team-a",
+		"task_type":    "simple",
+		"priority":     "high",
+		"input":        map[string]any{"text": "task"},
+		"options":      map[string]any{"stream": false, "max_tokens": 128},
+	})
+	if status != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d body=%s", status, string(body))
+	}
+	assertStructuredError(t, body, errCodeAgentNotImplemented)
 }
 
 func TestInfer_Success200(t *testing.T) {
