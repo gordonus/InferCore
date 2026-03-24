@@ -374,7 +374,8 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 - `internal/interfaces`: core module contracts
 - `internal/types`: shared core data structures
 - `configs`: YAML configuration examples
-- `docs`: architecture, observability, retrieval adapters, offline tooling, KB roadmap
+- `docs`: architecture, observability, retrieval adapters, LangChain integration notes, KB roadmap
+- `sdk/python`: minimal `POST /infer` client (optional)
 - `api`: OpenAPI contract draft
 
 ## Load testing
@@ -383,6 +384,13 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 - Config: `configs/infercore.loadtest.yaml` (mock-only, high `queue_limit`, `rate_limit_rps: 0`)
 - Script: `make load-infer` or `bash ./scripts/load-infer.sh` (env: `BASE_URL`, `DURATION`, `CONCURRENCY`, `QPS`, `INFERCORE_API_KEY`)
 
+## Integrate with LangChain (and other clients)
+
+InferCore’s HTTP gateway uses a **single ingress**: **`POST /infer`** for plain inference and for **RAG** (`request_type: rag` with `context.knowledge_base`, etc.). Success responses expose model output under **`result`** (e.g. `result.text`), not a top-level `output` field.
+
+- **Guide:** [`docs/langchain-integration.md`](docs/langchain-integration.md) — contract summary, auth (`X-InferCore-Api-Key` or `Authorization: Bearer`), RAG field names, and current limits (**replay** and request lookup are **CLI / internal ledger**, not REST on the gateway).
+- **Python helper:** [`sdk/python`](sdk/python) — minimal `InferCoreClient` (`infer()` → `POST /infer`).
+
 ## Documents
 
 - Website: [infercore.dev](https://infercore.dev)
@@ -390,6 +398,7 @@ Horizontal scale is typically **multiple InferCore replicas behind a load balanc
 - Architecture (one-pager for print/PDF): [`docs/architecture-one-pager.md`](docs/architecture-one-pager.md)
 - Config example: [`configs/infercore.example.yaml`](configs/infercore.example.yaml)
 - Backend adapters: [`docs/backend-adapters.md`](docs/backend-adapters.md)
+- LangChain / client integration: [`docs/langchain-integration.md`](docs/langchain-integration.md)
 - Observability: [`docs/observability.md`](docs/observability.md)
 - Load testing: [`docs/load-testing.md`](docs/load-testing.md)
 - Streaming & fallback: [`docs/streaming-and-fallback.md`](docs/streaming-and-fallback.md)
