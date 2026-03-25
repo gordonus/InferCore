@@ -131,6 +131,10 @@ Current fallback trigger values accepted by config:
 - `upstream_5xx`
 - `backend_error`
 
+## Local Prometheus and Grafana Cloud
+
+To run Prometheus on your machine, scrape `GET /metrics`, and **remote_write** to Grafana Cloud (hosted metrics), use the bundle under [deploy/prometheus/README.md](../deploy/prometheus/README.md) (`prometheus.template.yml`, `docker-entrypoint.sh`, `docker-compose.yml`, `.env.example`). InferCore must set `telemetry.metrics_enabled: true`; if `infercore_api_key` is enabled, configure scrape `authorization` in the template as documented there.
+
 ## See also
 
 - **Website:** [infercore.dev](https://infercore.dev) — product overview and blog

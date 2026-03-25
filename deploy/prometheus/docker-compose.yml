@@ -1,0 +1,17 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.template.yml:/etc/prometheus/prometheus.template.yml:ro
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    env_file:
+      - .env
+
+volumes:
+  prometheus_data:

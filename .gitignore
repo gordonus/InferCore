@@ -13,3 +13,7 @@ coverage.out
 .vscode/
 docs/scope.md
 docs/future-work.md
+
+# Local Prometheus + secrets (see deploy/prometheus/README.md)
+deploy/prometheus/.env
+deploy/prometheus/prometheus.yml

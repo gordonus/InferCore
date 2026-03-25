@@ -1,0 +1,23 @@
+# Processed at container start by docker-entrypoint.sh: placeholders are replaced
+# from GC_REMOTE_WRITE_* in .env (no Prometheus ${VAR} expansion — unreliable for remote_write).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+remote_write:
+  - url: __REMOTE_WRITE_URL__
+    basic_auth:
+      username: __REMOTE_WRITE_USER__
+      password: __REMOTE_WRITE_PASSWORD__
+
+scrape_configs:
+  - job_name: infercore
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    # Uncomment when InferCore enforces infercore_api_key / INFERCORE_API_KEY:
+    # authorization:
+    #   type: Bearer
+    #   credentials: YOUR_KEY_HERE
